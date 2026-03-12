@@ -174,17 +174,19 @@ StereoFrame QualityProcessor::ProcessOutput(StereoFrame input, QualityMode mode)
 // Wow  = slow (~0.5 Hz), +/- 0.3 semitones
 // Flutter = fast (~6 Hz), +/- 0.05 semitones
 // ---------------------------------------------------------------------------
-float QualityProcessor::GetPitchModulation(QualityMode mode) {
+float QualityProcessor::GetPitchModulation(QualityMode mode, size_t num_samples) {
     if (mode != QualityMode::kTape) {
         return 1.0f;
     }
 
-    // Advance LFO phases
-    wow_phase_ += wow_increment_;
-    if (wow_phase_ >= 1.0f) wow_phase_ -= 1.0f;
+    // Advance LFO phases by the number of samples in this block.
+    // The LFO increments are per-sample, so multiply by block size.
+    float advance = static_cast<float>(num_samples);
+    wow_phase_ += wow_increment_ * advance;
+    while (wow_phase_ >= 1.0f) wow_phase_ -= 1.0f;
 
-    flutter_phase_ += flutter_increment_;
-    if (flutter_phase_ >= 1.0f) flutter_phase_ -= 1.0f;
+    flutter_phase_ += flutter_increment_ * advance;
+    while (flutter_phase_ >= 1.0f) flutter_phase_ -= 1.0f;
 
     // Combined pitch deviation in semitones
     float wow_st     = kWowSemitones     * std::sin(wow_phase_     * kTwoPi);

@@ -15,6 +15,7 @@ void DelayEngine::Init(float sample_rate, RecordingBuffer* buffer) {
     delay_time_target_ = 0.0f;
     smoothed_delay_time_ = 0.0f;
     smoothed_envelope_gain_ = 1.0f;
+    smoothed_secondary_mix_ = 0.0f;
 
     pitch_shift_phase_[0] = 0.0f;
     pitch_shift_phase_[1] = 0.5f;
@@ -59,10 +60,11 @@ void DelayEngine::Process(const BeadsParameters& params,
 
     // ---------------------------------------------------------------
     // Secondary tap: golden ratio of primary, fades in when density > 0.5
+    // Target is computed immediately; smoothing happens per-sample below.
     // ---------------------------------------------------------------
-    float secondary_mix = 0.0f;
+    float secondary_mix_target = 0.0f;
     if (params.density > 0.5f) {
-        secondary_mix = (params.density - 0.5f) * 2.0f;  // 0 at 0.5, 1 at 1.0
+        secondary_mix_target = (params.density - 0.5f) * 2.0f;  // 0 at 0.5, 1 at 1.0
     }
 
     // ---------------------------------------------------------------
@@ -93,6 +95,18 @@ void DelayEngine::Process(const BeadsParameters& params,
         float min_loop = sample_rate_ * 0.01f;  // 10ms minimum loop
         loop_length_ = min_loop + params.size * std::max(0.0f, buffer_size - min_loop);
         loop_length_ = Clamp(loop_length_, min_loop, buffer_size);
+
+        // Set read_position_ to match where we were reading before freeze,
+        // so there's no position discontinuity at the freeze boundary.
+        // Before freeze: primary_pos = write_pos - delay.
+        // After freeze: primary_pos = loop_start_ + read_position_.
+        // For continuity: read_position_ = -smoothed_delay_time_ (mod loop_length_).
+        if (loop_length_ > 0.0f) {
+            float d = std::fmod(smoothed_delay_time_, loop_length_);
+            read_position_ = (d > 0.0f) ? (loop_length_ - d) : 0.0f;
+        } else {
+            read_position_ = 0.0f;
+        }
     } else if (!params.freeze && frozen_) {
         // Exiting freeze
         frozen_ = false;
@@ -111,10 +125,12 @@ void DelayEngine::Process(const BeadsParameters& params,
     // Per-sample processing
     // ---------------------------------------------------------------
     for (size_t i = 0; i < num_frames; ++i) {
-        // Smooth delay time changes (ONE_POLE, coefficient ~0.001)
+        // Smooth delay time and secondary mix changes
         ONE_POLE(smoothed_delay_time_, delay_time_target_, 0.001f);
+        ONE_POLE(smoothed_secondary_mix_, secondary_mix_target, 0.002f);
 
         float current_delay = smoothed_delay_time_;
+        float secondary_mix = smoothed_secondary_mix_;
 
         // ---------------------------------------------------------------
         // Compute primary read position

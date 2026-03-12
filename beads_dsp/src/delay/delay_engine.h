@@ -42,6 +42,7 @@ private:
     // Smoothing
     float smoothed_delay_time_ = 0.0f;
     float smoothed_envelope_gain_ = 1.0f;  // Smoothed slicer envelope to avoid hard edges
+    float smoothed_secondary_mix_ = 0.0f;  // Smoothed secondary tap mix level
 
     // Tape mode wow/flutter pitch modulation (ratio, 1.0 = none)
     float pitch_mod_ratio_ = 1.0f;

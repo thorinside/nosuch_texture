@@ -122,8 +122,14 @@ void Reverb::Process(float left_in, float right_in,
     // feedback_l_ and feedback_r_ carry values from the previous sample.
     // ------------------------------------------------------------------
 
+    // Save previous-sample feedback for cross-coupling.
+    // Both paths must use values from the PREVIOUS sample to maintain
+    // the symmetric Dattorro figure-8 topology.
+    float prev_fb_l = feedback_l_;
+    float prev_fb_r = feedback_r_;
+
     // LEFT PATH --------------------------------------------------------
-    float tank_l_in = diffused + fb * feedback_r_;
+    float tank_l_in = diffused + fb * prev_fb_r;
 
     // Modulated delay L1: write input, read with modulation
     delay_l1_.Write(tank_l_in);
@@ -147,7 +153,7 @@ void Reverb::Process(float left_in, float right_in,
     feedback_l_ = SoftClip(dl2_out);
 
     // RIGHT PATH -------------------------------------------------------
-    float tank_r_in = diffused + fb * feedback_l_;
+    float tank_r_in = diffused + fb * prev_fb_l;
 
     // Modulated delay R1
     delay_r1_.Write(tank_r_in);

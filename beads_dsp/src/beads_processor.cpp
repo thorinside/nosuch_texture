@@ -202,7 +202,7 @@ void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,
 
         // Tape mode wow/flutter: compute pitch modulation for this block.
         // The modulation is very slow (0.5Hz wow) so one value per block is fine.
-        float pitch_mod = s.quality_processor.GetPitchModulation(s.params.quality_mode);
+        float pitch_mod = s.quality_processor.GetPitchModulation(s.params.quality_mode, block);
         s.grain_engine.SetPitchModulation(pitch_mod);
         s.delay_engine.SetPitchModulation(pitch_mod);
 

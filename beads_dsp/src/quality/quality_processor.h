@@ -29,7 +29,8 @@ public:
 
     // Get wow/flutter pitch modulation (for tape mode grain read position).
     // Returns a pitch ratio multiplier (1.0 = no modulation).
-    float GetPitchModulation(QualityMode mode);
+    // num_samples: number of samples to advance the LFO by (typically block size).
+    float GetPitchModulation(QualityMode mode, size_t num_samples = 1);
 
 private:
     float sample_rate_ = 48000.0f;

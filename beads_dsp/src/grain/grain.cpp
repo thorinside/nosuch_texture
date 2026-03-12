@@ -98,12 +98,14 @@ bool Grain::Process(const RecordingBuffer& buffer, float* out_l, float* out_r) {
         if (read_position_ < 0.0f) read_position_ += buf_size;
     }
 
-    // Apply steal fade-out if active
+    // Apply steal fade-out if active.
+    // The fade ramps from 1.0 down to 0.0 over kStealFadeSamples+1 samples,
+    // ensuring the last audible sample has exactly zero gain (no micro-click).
     if (fading_out_) {
         float fade = static_cast<float>(steal_fade_counter_) / static_cast<float>(kStealFadeSamples);
         env *= fade;
         steal_fade_counter_--;
-        if (steal_fade_counter_ <= 0) {
+        if (steal_fade_counter_ < 0) {
             active_ = false;
             fading_out_ = false;
             *out_l = 0.0f;
