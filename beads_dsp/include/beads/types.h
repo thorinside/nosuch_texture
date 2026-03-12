@@ -49,8 +49,9 @@ static constexpr float kDefaultBufferDuration = 4.0f;
 // Reverb delay memory size (12 partitioned delay lines, ~12K samples needed)
 static constexpr size_t kReverbBufferSize = 16384;
 
-// Processing block size
-static constexpr size_t kMaxBlockSize = 1024;
+// Processing block size (kept small to limit stack usage; the Process() loop
+// handles arbitrary num_frames by iterating in chunks of this size)
+static constexpr size_t kMaxBlockSize = 64;
 
 // Hermite interpolation requires 4 samples
 static constexpr int kInterpolationTail = 4;
