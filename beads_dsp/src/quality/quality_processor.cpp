@@ -77,7 +77,7 @@ StereoFrame QualityProcessor::ProcessInput(StereoFrame input, QualityMode mode) 
             float hiss = noise_gen_.NextBipolar() * kTapeHissLevel;
             mono += hiss;
             // Mu-law compression
-            mono = MuLawCompress(mono, 255.0f);
+            mono = MuLawCompress(mono, 64.0f);
             result = { mono, mono };
             break;
         }
@@ -149,8 +149,8 @@ StereoFrame QualityProcessor::ProcessOutput(StereoFrame input, QualityMode mode)
             // re-filtering would double-tick the SVF.  Instead, expand
             // the already-filtered result.
             result = {
-                MuLawExpand(lp_l, 255.0f),
-                MuLawExpand(lp_r, 255.0f)
+                MuLawExpand(lp_l, 64.0f),
+                MuLawExpand(lp_r, 64.0f)
             };
             break;
         }
@@ -171,8 +171,8 @@ StereoFrame QualityProcessor::ProcessOutput(StereoFrame input, QualityMode mode)
 // GetPitchModulation: returns a pitch *ratio* multiplier for the current
 // sample.  Only tape mode produces modulation; all others return 1.0.
 //
-// Wow  = slow (~0.5 Hz), +/- 0.3 semitones
-// Flutter = fast (~6 Hz), +/- 0.05 semitones
+// Wow  = slow (~0.5 Hz), +/- 0.075 semitones
+// Flutter = fast (~6 Hz), +/- 0.012 semitones
 // ---------------------------------------------------------------------------
 float QualityProcessor::GetPitchModulation(QualityMode mode, size_t num_samples) {
     if (mode != QualityMode::kTape) {

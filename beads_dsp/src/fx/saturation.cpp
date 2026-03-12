@@ -39,7 +39,7 @@ float Saturation::Process(float input, QualityMode mode) {
 
         case QualityMode::kTape:
             // Mu-law compression for warm tape character
-            return MuLawCompress(input, 255.0f);
+            return MuLawCompress(input, 64.0f);
     }
     return input;
 }
@@ -75,7 +75,7 @@ float Saturation::LimitFeedback(float input, QualityMode mode) {
             // Mu-law keeps feedback warm and saturated.
             // Pre-clamp input so output stays in [-1, 1] (mu-law
             // output exceeds unity for |input| > 1).
-            return MuLawCompress(Clamp(input, -1.0f, 1.0f), 128.0f);
+            return MuLawCompress(Clamp(input, -1.0f, 1.0f), 32.0f);
     }
     return input;
 }

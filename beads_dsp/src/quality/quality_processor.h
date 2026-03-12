@@ -14,9 +14,9 @@ namespace beads {
 //   Clouds:    LP at ~14kHz input.  12-bit quantization on output
 //              (multiply by 2048, round, divide by 2048).
 //   CleanLoFi: LP at ~10kHz on wet path only (dry bypasses).  No quantization.
-//   Tape:      LP at ~8kHz.  Mono sum.  Mu-law transfer curve.
-//              Wow LFO (~0.5 Hz, +/-0.3 semitones) +
-//              flutter LFO (~6 Hz, +/-0.05 semitones).
+//   Tape:      LP at ~10kHz.  Mono sum.  Gentle mu-law transfer curve (mu=64).
+//              Wow LFO (~0.5 Hz, +/-0.075 semitones) +
+//              flutter LFO (~6 Hz, +/-0.012 semitones).
 class QualityProcessor {
 public:
     void Init(float sample_rate);
@@ -55,18 +55,18 @@ private:
     // -- Constants --
     static constexpr float kWowHz = 0.5f;
     static constexpr float kFlutterHz = 6.0f;
-    static constexpr float kWowSemitones = 0.3f;
-    static constexpr float kFlutterSemitones = 0.05f;
+    static constexpr float kWowSemitones = 0.075f;
+    static constexpr float kFlutterSemitones = 0.012f;
 
     static constexpr float kCloudsInputLpHz  = 14000.0f;
     static constexpr float kCleanLoFiLpHz    = 10000.0f;
-    static constexpr float kTapeLpHz         = 8000.0f;
+    static constexpr float kTapeLpHz         = 10000.0f;
 
     // 12-bit quantization scale (2^11 = 2048)
     static constexpr float kQuantScale = 2048.0f;
 
     // Tape hiss level (subtle)
-    static constexpr float kTapeHissLevel = 0.001f;
+    static constexpr float kTapeHissLevel = 0.00025f;
 
     // Quality mode transition: crossfade between old and new mode output
     QualityMode prev_input_mode_ = QualityMode::kHiFi;
