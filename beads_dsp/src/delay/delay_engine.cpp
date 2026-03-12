@@ -107,9 +107,16 @@ void DelayEngine::Process(const BeadsParameters& params,
         } else {
             read_position_ = 0.0f;
         }
+
+        // Reset pitch shifter phases to avoid timbral discontinuity
+        // from stale phase values in the new context.
+        pitch_shift_phase_[0] = 0.0f;
+        pitch_shift_phase_[1] = 0.5f;
     } else if (!params.freeze && frozen_) {
-        // Exiting freeze
+        // Exiting freeze: reset pitch shifter phases
         frozen_ = false;
+        pitch_shift_phase_[0] = 0.0f;
+        pitch_shift_phase_[1] = 0.5f;
     }
 
     // If frozen, TIME selects which portion of the buffer to loop
