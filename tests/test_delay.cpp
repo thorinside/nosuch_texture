@@ -63,10 +63,10 @@ TEST_CASE("DelayEngine: Impulse produces echo at expected delay", "[delay]") {
     // Write an impulse early, then silence — the delay should read it back.
     BeadsParameters params;
     params.size = 1.0f;
-    params.density = 0.5f;  // Moderate delay time
+    params.density = 0.25f;  // Moderate base delay time
     params.pitch = 0.0f;
     params.shape = 0.0f;
-    params.time = 0.5f;
+    params.time = 0.0f;      // 1x multiplier (shortest)
 
     std::vector<StereoFrame> output(256, {0.0f, 0.0f});
     float max_out = 0.0f;
@@ -146,9 +146,10 @@ TEST_CASE("DelayEngine: Freeze loop repeats content", "[delay]") {
     REQUIRE(ratio < 2.0f);
 }
 
-TEST_CASE("DelayEngine: Different density values produce different delay times", "[delay]") {
-    // Lower density = longer delay, higher density = shorter delay
-    // We verify by checking that the output differs between the two settings
+TEST_CASE("DelayEngine: TIME multiplier affects delay length", "[delay]") {
+    // TIME=0 (CCW) = 1x base delay (short), TIME=1 (CW) = max multiple (long)
+    // With the same DENSITY (base delay), different TIME values should
+    // produce different actual delay times.
 
     DelayTestBuffer tb1(48000), tb2(48000);
     DelayEngine engine1, engine2;
@@ -166,11 +167,11 @@ TEST_CASE("DelayEngine: Different density values produce different delay times",
     params1.size = 1.0f;
     params1.pitch = 0.0f;
     params1.shape = 0.0f;
-    params1.time = 0.5f;
+    params1.density = 0.3f;  // Base delay set by density
     params2 = params1;
 
-    params1.density = 0.1f;   // Low density = long delay
-    params2.density = 0.9f;   // High density = short delay
+    params1.time = 0.9f;   // High time = long delay (large multiplier)
+    params2.time = 0.1f;   // Low time = short delay (small multiplier)
 
     std::vector<StereoFrame> out1(256), out2(256);
 
@@ -190,8 +191,7 @@ TEST_CASE("DelayEngine: Different density values produce different delay times",
         }
     }
 
-    // At least one should have been detected, and the high-density (short delay) should
-    // appear sooner or at the same time as the low-density (long delay)
+    // Low time (short delay) should produce output sooner than high time (long delay)
     if (first_nonzero_block1 >= 0 && first_nonzero_block2 >= 0) {
         REQUIRE(first_nonzero_block2 <= first_nonzero_block1);
     }

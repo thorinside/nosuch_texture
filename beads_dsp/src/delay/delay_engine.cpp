@@ -41,26 +41,46 @@ void DelayEngine::Process(const BeadsParameters& params,
     const float buffer_size = static_cast<float>(buffer_->size());
 
     // ---------------------------------------------------------------
-    // DENSITY -> delay time (exponential mapping)
-    // density=0 -> full buffer length, density=1.0 -> ~1ms (audio rate)
+    // DENSITY -> base delay time (matches original Beads manual)
+    // At noon (0.5): base delay = full buffer duration.
+    // CCW from noon (< 0.5): shorter base delay down to ~1ms.
+    // CW from noon (> 0.5): shorter base delay + secondary tap.
     // ---------------------------------------------------------------
     const float min_delay_samples = sample_rate_ * 0.001f;  // 1ms
     const float max_delay_samples = buffer_size;
 
-    // Exponential mapping: delay = max * exp(-k * density)
-    // At density=0: delay = max
-    // At density=1: delay ~= min
-    // k = ln(max / min)
-    // Guard: if buffer is too small, k could be zero or negative.
+    // Map density 0..0.5 to delay time: 0 = min, 0.5 = max (full buffer)
+    // Map density 0.5..1.0: delay shortens again + adds secondary tap
+    float density_for_delay;
+    if (params.density <= 0.5f) {
+        density_for_delay = params.density * 2.0f;  // 0..1 over CCW half
+    } else {
+        density_for_delay = (1.0f - params.density) * 2.0f;  // 1..0 over CW half
+    }
+    // Exponential mapping: density_for_delay 0 = min delay, 1 = max delay
     float ratio = max_delay_samples / std::max(min_delay_samples, 1.0f);
     if (ratio < 1.0f) ratio = 1.0f;
     float k = std::log(ratio);
-    delay_time_target_ = max_delay_samples * std::exp(-k * params.density);
+    float base_delay = min_delay_samples * std::exp(k * density_for_delay);
+    base_delay = Clamp(base_delay, min_delay_samples, max_delay_samples);
+
+    // ---------------------------------------------------------------
+    // TIME -> delay time multiplier (matches original Beads manual)
+    // "Selects the actual delay time, as a multiple of the base delay
+    // time set by DENSITY."
+    // time=0 (CCW) -> 1x base (most recent, shortest)
+    // time=1 (CW)  -> max multiple (oldest, longest)
+    // ---------------------------------------------------------------
+    float max_multiplier = max_delay_samples / std::max(base_delay, 1.0f);
+    max_multiplier = std::max(max_multiplier, 1.0f);
+    // Exponential sweep from 1x to max_multiplier
+    float multiplier = std::pow(max_multiplier, params.time);
+    delay_time_target_ = base_delay * multiplier;
     delay_time_target_ = Clamp(delay_time_target_, 1.0f, max_delay_samples);
 
     // ---------------------------------------------------------------
     // Secondary tap: golden ratio of primary, fades in when density > 0.5
-    // Target is computed immediately; smoothing happens per-sample below.
+    // (manual: density CW from noon adds "an additional, unevenly spaced, tap")
     // ---------------------------------------------------------------
     float secondary_mix_target = 0.0f;
     if (params.density > 0.5f) {

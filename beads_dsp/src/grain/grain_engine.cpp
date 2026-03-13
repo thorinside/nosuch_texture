@@ -80,16 +80,18 @@ Grain::GrainParameters GrainEngine::ComputeGrainParams(
     gp.size = duration * sample_rate_;
 
     // --- TIME → buffer read position ---
-    // 0.0 → oldest samples, 1.0 → newest
+    // Matches original Beads manual:
+    //   0.0 (fully CCW) → most recent audio (near write head)
+    //   1.0 (fully CW)  → oldest audio (far from write head)
     float mod_time = ar_time_.Process(params.time, params.time_ar,
                                        params.time_cv, params.time_cv_connected);
     mod_time = Clamp(mod_time, 0.0f, 1.0f);
 
     // Convert to an absolute position in the recording buffer.
-    // time=1.0 means read from write_head (newest), time=0.0 means read
+    // time=0.0 means read from write_head (newest), time=1.0 means read
     // from one full buffer behind the write_head (oldest).
     float buf_size_f = static_cast<float>(buffer_->size());
-    float offset_frames = (1.0f - mod_time) * buf_size_f;
+    float offset_frames = mod_time * buf_size_f;
     float pos = static_cast<float>(buffer_->write_head()) - offset_frames;
     if (pos < 0.0f) pos += buf_size_f;
     gp.position = pos;
