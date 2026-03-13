@@ -204,3 +204,67 @@ TEST_CASE("BeadsProcessor: All quality modes work without NaN", "[processor]") {
         }
     }
 }
+
+TEST_CASE("BeadsProcessor: Feedback produces sustained echo in delay mode", "[processor]") {
+    // Run the same scenario with and without feedback.
+    // With feedback, output during silence should be significantly louder
+    // because the signal is re-recorded into the buffer on each delay cycle.
+    float echo_level_with_fb = 0.0f;
+    float echo_level_without_fb = 0.0f;
+
+    for (int use_feedback = 0; use_feedback < 2; ++use_feedback) {
+        TestProcessor tp;
+
+        BeadsParameters params;
+        params.size = 1.0f;             // Delay mode
+        params.density = 0.3f;          // Base delay time (moderate)
+        params.time = 0.3f;             // Multiplier (moderate)
+        params.feedback = use_feedback ? 0.9f : 0.0f;
+        params.dry_wet = 1.0f;          // Full wet
+        params.pitch = 0.0f;
+        params.shape = 0.0f;            // No tremolo
+        params.manual_gain_db = 0.0f;   // Unity gain
+        tp.processor.SetParameters(params);
+
+        std::vector<StereoFrame> input(kBlockSize);
+        std::vector<StereoFrame> output(kBlockSize);
+
+        // Phase 1: Feed a sine burst for ~50 blocks
+        for (int block = 0; block < 50; ++block) {
+            for (size_t i = 0; i < kBlockSize; ++i) {
+                float t = static_cast<float>(block * kBlockSize + i);
+                float phase = t / kSampleRate * 440.0f * 2.0f * 3.14159265f;
+                input[i] = {std::sin(phase) * 0.5f, std::sin(phase) * 0.5f};
+            }
+            tp.processor.Process(input.data(), output.data(), kBlockSize);
+        }
+
+        // Phase 2: Feed silence for many blocks — measure LATE output
+        // Skip early blocks where buffer still has original content
+        // Focus on blocks 100-200 where only feedback-sustained content remains
+        float max_late_level = 0.0f;
+        for (int block = 0; block < 200; ++block) {
+            for (size_t i = 0; i < kBlockSize; ++i) {
+                input[i] = {0.0f, 0.0f};
+            }
+            tp.processor.Process(input.data(), output.data(), kBlockSize);
+
+            if (block >= 100) {
+                for (size_t i = 0; i < kBlockSize; ++i) {
+                    max_late_level = std::max(max_late_level,
+                        std::max(std::abs(output[i].l), std::abs(output[i].r)));
+                }
+            }
+        }
+
+        if (use_feedback)
+            echo_level_with_fb = max_late_level;
+        else
+            echo_level_without_fb = max_late_level;
+    }
+
+    // Without feedback, the buffer gets overwritten with silence and output drops to ~0
+    // With 90% feedback, signal should still be audible after 200 blocks
+    REQUIRE(echo_level_with_fb > echo_level_without_fb * 10.0f);
+    REQUIRE(echo_level_with_fb > 0.01f);
+}
