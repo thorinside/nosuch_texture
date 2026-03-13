@@ -73,7 +73,7 @@ TEST_CASE("Grain: Processes for correct duration", "[grain]") {
 
     int sample_count = 0;
     float out_l, out_r;
-    while (g.Process(tb.buffer, &out_l, &out_r)) {
+    while (g.Process(tb.buffer, static_cast<float>(tb.buffer.size()), &out_l, &out_r)) {
         sample_count++;
         if (sample_count > 1000) break;  // Safety
     }
@@ -99,7 +99,7 @@ TEST_CASE("Grain: Output is non-zero with sine input", "[grain]") {
 
     float max_level = 0.0f;
     float out_l, out_r;
-    while (g.Process(tb.buffer, &out_l, &out_r)) {
+    while (g.Process(tb.buffer, static_cast<float>(tb.buffer.size()), &out_l, &out_r)) {
         max_level = std::max(max_level, std::max(std::abs(out_l), std::abs(out_r)));
     }
 
@@ -123,7 +123,7 @@ TEST_CASE("Grain: Bell envelope has zero at start and end", "[grain]") {
 
     float out_l, out_r;
     // First sample should be near zero (Hann window starts at 0)
-    g.Process(tb.buffer, &out_l, &out_r);
+    g.Process(tb.buffer, static_cast<float>(tb.buffer.size()), &out_l, &out_r);
     REQUIRE(std::abs(out_l) < 0.05f);
 }
 
@@ -145,7 +145,7 @@ TEST_CASE("Grain: Pre-delay delays output", "[grain]") {
     float out_l, out_r;
     // First 10 samples should be silent (pre-delay)
     for (int i = 0; i < 10; ++i) {
-        REQUIRE(g.Process(tb.buffer, &out_l, &out_r) == true);
+        REQUIRE(g.Process(tb.buffer, static_cast<float>(tb.buffer.size()), &out_l, &out_r) == true);
         REQUIRE(out_l == 0.0f);
         REQUIRE(out_r == 0.0f);
     }
@@ -259,7 +259,7 @@ TEST_CASE("Grain: Reverse playback reads buffer backwards", "[grain]") {
 
     std::vector<float> fwd_samples;
     float out_l, out_r;
-    while (fwd.Process(buffer, &out_l, &out_r)) {
+    while (fwd.Process(buffer, static_cast<float>(buffer.size()), &out_l, &out_r)) {
         fwd_samples.push_back(out_l);
     }
 
@@ -277,7 +277,7 @@ TEST_CASE("Grain: Reverse playback reads buffer backwards", "[grain]") {
     rev.Start(rev_params);
 
     std::vector<float> rev_samples;
-    while (rev.Process(buffer, &out_l, &out_r)) {
+    while (rev.Process(buffer, static_cast<float>(buffer.size()), &out_l, &out_r)) {
         rev_samples.push_back(out_l);
     }
 

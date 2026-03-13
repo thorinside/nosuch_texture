@@ -53,7 +53,8 @@ private:
     // Prevents DC accumulation in the feedback loop at high decay settings.
     float dc_estimate_l_ = 0.0f;
     float dc_estimate_r_ = 0.0f;
-    static constexpr float kDcBlockCoeff = 0.0005f;  // ~3.8Hz at 48kHz
+    float dc_block_coeff_ = 0.0005f;  // Computed from sample rate in Init()
+    static constexpr float kDcBlockTargetHz = 3.8f;
 
     // -- 12 individual delay lines --
 
@@ -101,7 +102,7 @@ private:
     // Process one Schroeder allpass: read delayed, compute, write, advance.
     // Returns the allpass output.
     static float ProcessAllpass(DelayLine& dl, float input, float g) {
-        float delayed = dl.Read(dl.size());
+        float delayed = dl.ReadOldest();
         float w = input - g * delayed;
         dl.Write(w);
         dl.Advance();

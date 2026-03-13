@@ -591,10 +591,10 @@ static void setupUi(_NT_algorithm* self, _NT_float3& pots) {
 
 static const char* qualityLabel(int q) {
     switch (q) {
-    case 0: return "HiFi 2s";
-    case 1: return "Clouds 4s";
-    case 2: return "LoFi 16s";
-    case 3: return "Tape 8s";
+    case 0: return "HiFi 4s";
+    case 1: return "Clouds 8s";
+    case 2: return "LoFi 32s";
+    case 3: return "Tape 16s";
     default: return "?";
     }
 }

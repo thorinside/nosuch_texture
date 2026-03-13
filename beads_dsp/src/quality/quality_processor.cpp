@@ -31,6 +31,32 @@ void QualityProcessor::Init(float sample_rate) {
     flutter_increment_ = kFlutterHz / sample_rate_;
 
     noise_gen_.Init(0xBEAD5EED);
+
+    // Force coefficient recomputation on first call
+    prev_input_mode_ = QualityMode::kHiFi;
+    prev_output_mode_ = QualityMode::kHiFi;
+    current_input_cutoff_hz_ = kCloudsInputLpHz;
+    current_output_cutoff_hz_ = kCleanLoFiLpHz;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: get input LP cutoff for a given mode
+// ---------------------------------------------------------------------------
+static float InputCutoffForMode(QualityMode mode) {
+    switch (mode) {
+        case QualityMode::kClouds:    return QualityProcessor::kCloudsInputLpHz;
+        case QualityMode::kCleanLoFi: return QualityProcessor::kCleanLoFiInputLpHz;
+        case QualityMode::kTape:      return QualityProcessor::kTapeLpHz;
+        default:                      return QualityProcessor::kCloudsInputLpHz;
+    }
+}
+
+static float OutputCutoffForMode(QualityMode mode) {
+    switch (mode) {
+        case QualityMode::kCleanLoFi: return QualityProcessor::kCleanLoFiLpHz;
+        case QualityMode::kTape:      return QualityProcessor::kTapeLpHz;
+        default:                      return QualityProcessor::kCleanLoFiLpHz;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -42,20 +68,16 @@ StereoFrame QualityProcessor::ProcessInput(StereoFrame input, QualityMode mode) 
     if (mode != prev_input_mode_) {
         input_xfade_counter_ = kModeXfadeSamples;
         prev_input_mode_ = mode;
+
+        // Recompute SVF coefficients only on mode change
+        float cutoff_hz = InputCutoffForMode(mode);
+        if (cutoff_hz != current_input_cutoff_hz_) {
+            current_input_cutoff_hz_ = cutoff_hz;
+            input_lp_l_.SetFrequencyHz(cutoff_hz, sample_rate_);
+            input_lp_r_.SetFrequencyHz(cutoff_hz, sample_rate_);
+        }
     }
 
-    // Always run the input LP filters to keep their state fresh.
-    // Set the cutoff based on the current mode (or a reasonable default
-    // for modes that don't use the input LP).
-    float cutoff_hz;
-    switch (mode) {
-        case QualityMode::kClouds:    cutoff_hz = kCloudsInputLpHz; break;
-        case QualityMode::kCleanLoFi: cutoff_hz = kCleanLoFiInputLpHz; break;
-        case QualityMode::kTape:      cutoff_hz = kTapeLpHz; break;
-        default:                      cutoff_hz = kCloudsInputLpHz; break;  // Nyquist-ish passthrough
-    }
-    input_lp_l_.SetFrequencyHz(cutoff_hz, sample_rate_);
-    input_lp_r_.SetFrequencyHz(cutoff_hz, sample_rate_);
     float filtered_l = input_lp_l_.ProcessLP(input.l);
     float filtered_r = input_lp_r_.ProcessLP(input.r);
 
@@ -110,21 +132,17 @@ StereoFrame QualityProcessor::ProcessOutput(StereoFrame input, QualityMode mode)
     if (mode != prev_output_mode_) {
         output_xfade_counter_ = kModeXfadeSamples;
         prev_output_mode_ = mode;
-    }
 
-    // Always run the output LP filters to keep their state fresh.
-    float cutoff_hz;
-    switch (mode) {
-        case QualityMode::kCleanLoFi: cutoff_hz = kCleanLoFiLpHz; break;
-        case QualityMode::kTape:      cutoff_hz = kTapeLpHz; break;
-        default:                      cutoff_hz = kCleanLoFiLpHz; break;
+        // Recompute SVF coefficients only on mode change
+        float cutoff_hz = OutputCutoffForMode(mode);
+        if (cutoff_hz != current_output_cutoff_hz_) {
+            current_output_cutoff_hz_ = cutoff_hz;
+            output_lp_l_.SetFrequencyHz(cutoff_hz, sample_rate_);
+            output_lp_r_.SetFrequencyHz(cutoff_hz, sample_rate_);
+        }
     }
-    output_lp_l_.SetFrequencyHz(cutoff_hz, sample_rate_);
-    output_lp_r_.SetFrequencyHz(cutoff_hz, sample_rate_);
 
     // Feed-through: always tick the filters so their state tracks the signal.
-    // For modes that use the LP output, we use it below; for modes that
-    // don't, the filter still processes the sample to stay in sync.
     float lp_l = output_lp_l_.ProcessLP(input.l);
     float lp_r = output_lp_r_.ProcessLP(input.r);
 

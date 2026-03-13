@@ -19,6 +19,7 @@ private:
     float envelope_ = 0.0f;        // Peak envelope follower
     float gain_ = 1.0f;            // Current applied gain
     float target_gain_ = 1.0f;
+    float last_gain_db_ = 0.0f;   // Cache to skip DbToGain when unchanged
 
     // Timing
     float attack_coeff_ = 0.0f;     // Fast attack

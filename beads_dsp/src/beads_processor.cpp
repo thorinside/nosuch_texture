@@ -1,5 +1,6 @@
 #include "beads_processor.h"
 #include "util/dsp_utils.h"
+#include "util/cosine_table.h"
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -236,6 +237,16 @@ void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,
             }
         }
 
+        // Advance dry/wet smoothing and compute equal-power gains once per
+        // block.  The ONE_POLE with 0.002 coefficient changes < 0.13% across
+        // 64 samples, so per-block cos/sin is inaudible vs per-sample.
+        for (size_t i = 0; i < block; ++i) {
+            ONE_POLE(s.smoothed_dry_wet, s.params.dry_wet, 0.002f);
+        }
+        float dw_phase = s.smoothed_dry_wet * 0.25f;
+        float dry_gain = CosLookup(dw_phase);
+        float wet_gain = CosLookup(dw_phase - 0.25f);
+
         // Per-sample output processing for this block
         for (size_t i = 0; i < block; ++i) {
             StereoFrame wet_frame;
@@ -281,9 +292,12 @@ void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,
                 s.feedback_sample = {0.0f, 0.0f};
             }
 
-            // 8. Dry/wet crossfade (equal-power) -- smoothed to avoid zipper noise
-            ONE_POLE(s.smoothed_dry_wet, s.params.dry_wet, 0.002f);
-            StereoFrame mixed = EqualPowerCrossfade(input[offset + i], wet_frame, s.smoothed_dry_wet);
+            // 8. Dry/wet crossfade (equal-power, gains precomputed per block)
+            StereoFrame in_frame = input[offset + i];
+            StereoFrame mixed = {
+                in_frame.l * dry_gain + wet_frame.l * wet_gain,
+                in_frame.r * dry_gain + wet_frame.r * wet_gain
+            };
 
             // 9. Reverb
             float rev_l, rev_r;

@@ -1,4 +1,5 @@
 #include "reverb.h"
+#include "../util/cosine_table.h"
 #include <cmath>
 
 namespace beads {
@@ -18,6 +19,9 @@ void Reverb::Init(float* buffer, size_t buffer_size, float sample_rate) {
     lp_state_r_ = 0.0f;
     dc_estimate_l_ = 0.0f;
     dc_estimate_r_ = 0.0f;
+    dc_block_coeff_ = (sample_rate > 0.0f)
+        ? (kTwoPi * kDcBlockTargetHz / sample_rate)
+        : 0.0005f;
     feedback_l_ = 0.0f;
     feedback_r_ = 0.0f;
 
@@ -100,8 +104,8 @@ void Reverb::Process(float left_in, float right_in,
     lfo_phase_ += lfo_increment_;
     if (lfo_phase_ >= 1.0f) lfo_phase_ -= 1.0f;
 
-    float lfo_sin = std::sin(lfo_phase_ * kTwoPi);
-    float lfo_cos = std::cos(lfo_phase_ * kTwoPi);
+    float lfo_cos = CosLookup(lfo_phase_);
+    float lfo_sin = CosLookup(lfo_phase_ - 0.25f);  // sin = cos(phase - pi/2)
     float mod_l = kModDepth * lfo_sin;
     float mod_r = kModDepth * lfo_cos;
 
@@ -148,11 +152,11 @@ void Reverb::Process(float left_in, float right_in,
 
     // DC blocker: subtract slowly-tracked DC estimate to prevent
     // low-frequency buildup at high decay settings.
-    ONE_POLE(dc_estimate_l_, lp_state_l_, kDcBlockCoeff);
+    ONE_POLE(dc_estimate_l_, lp_state_l_, dc_block_coeff_);
     float tank_l_dc_blocked = lp_state_l_ - dc_estimate_l_;
 
     // Feedback delay L2
-    float dl2_out = delay_l2_.Read(delay_l2_.size());
+    float dl2_out = delay_l2_.ReadOldest();
     delay_l2_.Write(tank_l_dc_blocked);
     delay_l2_.Advance();
 
@@ -176,11 +180,11 @@ void Reverb::Process(float left_in, float right_in,
     ONE_POLE(lp_state_r_, ar2_out, lp_coeff);
 
     // DC blocker
-    ONE_POLE(dc_estimate_r_, lp_state_r_, kDcBlockCoeff);
+    ONE_POLE(dc_estimate_r_, lp_state_r_, dc_block_coeff_);
     float tank_r_dc_blocked = lp_state_r_ - dc_estimate_r_;
 
     // Feedback delay R2
-    float dr2_out = delay_r2_.Read(delay_r2_.size());
+    float dr2_out = delay_r2_.ReadOldest();
     delay_r2_.Write(tank_r_dc_blocked);
     delay_r2_.Advance();
 

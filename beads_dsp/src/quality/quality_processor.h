@@ -51,7 +51,12 @@ private:
     float wow_increment_ = 0.0f;
     float flutter_increment_ = 0.0f;
 
-    // -- Constants --
+    // Cached cutoff Hz to avoid recomputing tan() every sample
+    float current_input_cutoff_hz_ = 0.0f;
+    float current_output_cutoff_hz_ = 0.0f;
+
+public:
+    // -- Constants (public for helper access) --
     static constexpr float kWowHz = 0.5f;
     static constexpr float kFlutterHz = 6.0f;
     static constexpr float kWowSemitones = 0.02f;
@@ -61,6 +66,8 @@ private:
     static constexpr float kCleanLoFiLpHz      = 10000.0f;
     static constexpr float kCleanLoFiInputLpHz = 2500.0f;
     static constexpr float kTapeLpHz           = 5000.0f;
+
+private:
 
     // 12-bit quantization scale (2^11 = 2048)
     static constexpr float kQuantScale = 2048.0f;
