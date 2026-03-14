@@ -38,7 +38,8 @@ private:
     float sample_rate_ = 48000.0f;
 
     // Overlap normalization
-    float overlap_count_lp_ = 0.0f;  // Smoothed active grain count
+    float overlap_count_lp_ = 0.0f;   // Smoothed active grain count
+    float gain_normalization_ = 1.0f;  // Smoothed gain factor
 
     // Tape mode wow/flutter pitch modulation (ratio, 1.0 = none)
     float pitch_mod_ratio_ = 1.0f;

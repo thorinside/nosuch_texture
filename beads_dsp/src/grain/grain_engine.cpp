@@ -11,6 +11,7 @@ void GrainEngine::Init(float sample_rate, RecordingBuffer* buffer) {
     sample_rate_ = sample_rate;
     buffer_ = buffer;
     overlap_count_lp_ = 0.0f;
+    gain_normalization_ = 1.0f;
 
     for (int i = 0; i < kMaxGrains; ++i) {
         grains_[i].Init();
@@ -89,26 +90,40 @@ Grain::GrainParameters GrainEngine::ComputeGrainParams(
                                        params.time_cv, params.time_cv_connected);
     mod_time = Clamp(mod_time, 0.0f, 1.0f);
 
-    // Convert to an absolute position in the recording buffer.
-    // time=0.0 means read from write_head (newest), time=1.0 means read
-    // from one full buffer behind the write_head (oldest).
-    float buf_size_f = static_cast<float>(buffer_->size());
-    float offset_frames = mod_time * buf_size_f;
-    float pos = static_cast<float>(buffer_->write_head()) - offset_frames;
-    if (pos < 0.0f) pos += buf_size_f;
-    gp.position = pos;
-
     // --- PITCH → playback rate ---
+    // (computed before position so we can calculate grain span for headroom)
     float mod_pitch = ar_pitch_.Process(params.pitch, params.pitch_ar,
                                          params.pitch_cv, params.pitch_cv_connected);
     gp.pitch_ratio = SemitonesToRatio(mod_pitch) * pitch_mod_ratio_ / df_f;
     if (reverse) {
         gp.pitch_ratio = -gp.pitch_ratio;
+    }
+
+    // Convert to an absolute position in the recording buffer.
+    // time=0.0 means read from write_head (newest), time=1.0 means read
+    // from one full buffer behind the write_head (oldest).
+    float buf_size_f = static_cast<float>(buffer_->size());
+    float offset_frames = mod_time * buf_size_f;
+
+    // Ensure the grain has enough headroom to play without reading past the
+    // write head (forward) or before the oldest valid data (reverse).
+    // Without this, TIME near 0 + large SIZE reads stale/unwritten data.
+    float span = gp.size * std::fabs(gp.pitch_ratio);
+    // Also account for write head advancing during grain lifetime
+    float write_advance = gp.size / df_f;
+    float min_offset = span + write_advance;
+    min_offset = std::min(min_offset, buf_size_f - 1.0f);
+    offset_frames = std::max(offset_frames, min_offset);
+
+    float pos = static_cast<float>(buffer_->write_head()) - offset_frames;
+    if (pos < 0.0f) pos += buf_size_f;
+    gp.position = pos;
+
+    if (reverse) {
         // Offset start position to the END of the segment a forward grain
         // would play.  The reverse grain then reads backwards through the
         // same audio, producing true reversed playback of the intended
         // segment rather than reading into unrelated older audio.
-        float span = gp.size * std::fabs(gp.pitch_ratio);
         gp.position += span;
         while (gp.position >= buf_size_f) gp.position -= buf_size_f;
     }
@@ -143,12 +158,31 @@ void GrainEngine::Process(const BeadsParameters& params,
     int num_triggers = scheduler_.Process(params, num_frames,
                                           trigger_samples, kMaxTriggers);
 
+    // Compute a dynamic grain cap based on grain size.
+    // Long grains don't benefit from heavy overlap — they play the same
+    // audio and just waste CPU.  Cap = buffer_duration / grain_duration,
+    // scaled by 2 for texture, clamped to [2, kMaxGrains].
+    int df = buffer_->decimation_factor();
+    float buf_dur = static_cast<float>(buffer_->size()) * static_cast<float>(df)
+                  / sample_rate_;
+    float abs_size = std::fabs(params.size);
+    abs_size = Clamp(abs_size, 0.0f, 0.999f);
+    float min_dur = 0.01f;
+    float grain_dur = min_dur * std::pow(buf_dur / min_dur, abs_size);
+    int max_active = static_cast<int>(buf_dur / grain_dur * 2.0f);
+    max_active = std::max(max_active, 2);
+    max_active = std::min(max_active, kMaxGrains);
+
+    int active_before = ActiveGrainCount();
+
     // Start new grains at their trigger points.
     for (int t = 0; t < num_triggers; ++t) {
+        if (active_before >= max_active) break;
         Grain* g = AllocateGrain();
         if (g) {
             auto gp = ComputeGrainParams(params, trigger_samples[t]);
             g->Start(gp);
+            ++active_before;
         }
     }
 
@@ -171,25 +205,26 @@ void GrainEngine::Process(const BeadsParameters& params,
         grains_[g].ProcessBlock(*buffer_, buf_size_f, output, num_frames);
     }
 
-    // --- Overlap normalization ---
-    // Advance the smoothed count for the full block, then apply the
-    // normalization factor once. The ONE_POLE with 0.05 coefficient
-    // tracks the actual grain count more closely, reducing gain pumping
-    // during rapid steal/replace cycles.
+    // --- Overlap normalization (matches Clouds approach) ---
+    // Asymmetric tracking: fast rise (when grains pile up, reduce gain
+    // quickly to prevent clipping), slow fall (when grains end, restore
+    // gain slowly to prevent pumping).
     float count_f = static_cast<float>(active_count);
+    float slope_coeff = (count_f > overlap_count_lp_) ? 0.9f : 0.2f;
     for (size_t i = 0; i < num_frames; ++i) {
-        ONE_POLE(overlap_count_lp_, count_f, 0.05f);
+        ONE_POLE(overlap_count_lp_, count_f, slope_coeff);
     }
 
-    // Clamp minimum to 2.0 so 1-2 grain scenarios aren't normalized
-    // (avoids fighting the natural envelope).
-    float clamped_count = std::max(overlap_count_lp_, 2.0f);
-    if (clamped_count > 2.0f) {
-        float norm = 1.0f / std::sqrt(clamped_count);
-        for (size_t i = 0; i < num_frames; ++i) {
-            output[i].l *= norm;
-            output[i].r *= norm;
-        }
+    // 1/sqrt(n-1) for n > 2, unity gain for 1-2 grains.
+    float gain_norm = (overlap_count_lp_ > 2.0f)
+        ? 1.0f / std::sqrt(overlap_count_lp_ - 1.0f)
+        : 1.0f;
+
+    // Per-sample smooth the gain itself to avoid clicks on sudden changes.
+    for (size_t i = 0; i < num_frames; ++i) {
+        ONE_POLE(gain_normalization_, gain_norm, 0.01f);
+        output[i].l *= gain_normalization_;
+        output[i].r *= gain_normalization_;
     }
 }
 
