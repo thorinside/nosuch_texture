@@ -812,7 +812,7 @@ static bool draw(_NT_algorithm* self) {
 
 static const _NT_factory factory = {
     .guid = NT_MULTICHAR('T', 'h', 'T', 'x'),
-    .name = "Texture",
+    .name = "No Such Texture",
     .description = "Granular texture synthesizer",
     .numSpecifications = 0,
     .specifications = NULL,
