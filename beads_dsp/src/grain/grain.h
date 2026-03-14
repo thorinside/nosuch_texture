@@ -25,8 +25,8 @@ public:
     // Trigger a new grain
     void Start(const GrainParameters& params);
 
-    // Begin a short fade-out for grain stealing (avoids click)
-    void StartFadeOut();
+    // Mark grain for zero-crossing kill (replaces instant fade-out)
+    void StartPendingKill();
 
     // Process one sample, reading from the recording buffer.
     // Returns true if grain is still active.
@@ -63,9 +63,9 @@ public:
         float env = ComputeEnvelope(envelope_phase_);
         envelope_phase_ += envelope_increment_;
 
-        // Read from recording buffer with linear interpolation.
+        // Read from recording buffer with Hermite interpolation.
         float sample_l, sample_r;
-        buffer.ReadLinearStereoFast(read_position_, &sample_l, &sample_r);
+        buffer.ReadHermiteStereoFast(read_position_, &sample_l, &sample_r);
 
         // Advance read position, wrapping around buffer size.
         read_position_ += phase_increment_;
@@ -74,24 +74,56 @@ public:
             while (read_position_ < 0.0f) read_position_ += buf_size;
         }
 
-        // Apply steal fade-out if active.
-        if (fading_out_) {
-            float fade = static_cast<float>(steal_fade_counter_)
-                       * steal_fade_inv_;
-            env *= fade;
-            steal_fade_counter_--;
-            if (steal_fade_counter_ < 0) {
-                active_ = false;
-                fading_out_ = false;
-                *out_l = 0.0f;
-                *out_r = 0.0f;
-                return false;
-            }
-        }
-
         // Apply envelope and panning.
-        *out_l = sample_l * env * pan_l_;
-        *out_r = sample_r * env * pan_r_;
+        float out_l_val = sample_l * env * pan_l_;
+        float out_r_val = sample_r * env * pan_r_;
+
+        // Zero-crossing kill: detect sign change on mono sum
+        // (handles hard-panned content better than L-only).
+        if (pending_kill_) {
+            float mono = out_l_val + out_r_val;
+            if (fallback_fade_) {
+                // Short fallback fade when no zero crossing found.
+                float fade = static_cast<float>(fallback_counter_)
+                           * kFallbackFadeInv;
+                out_l_val *= fade;
+                out_r_val *= fade;
+                fallback_counter_--;
+                if (fallback_counter_ < 0) {
+                    active_ = false;
+                    pending_kill_ = false;
+                    fallback_fade_ = false;
+                    *out_l = 0.0f;
+                    *out_r = 0.0f;
+                    prev_mono_ = 0.0f;
+                    return false;
+                }
+            } else {
+                // Check for zero crossing (sign change) with minimum
+                // amplitude to avoid killing on silence.
+                bool crossed = (prev_mono_ > 1e-5f && mono <= 0.0f) ||
+                               (prev_mono_ < -1e-5f && mono >= 0.0f);
+                if (crossed) {
+                    active_ = false;
+                    pending_kill_ = false;
+                    *out_l = 0.0f;
+                    *out_r = 0.0f;
+                    prev_mono_ = 0.0f;
+                    return false;
+                }
+                kill_deadline_--;
+                if (kill_deadline_ <= 0) {
+                    // No crossing found — start short fallback fade.
+                    fallback_fade_ = true;
+                    fallback_counter_ = kFallbackFadeSamples;
+                }
+            }
+            prev_mono_ = mono;
+        } else {
+            prev_mono_ = out_l_val + out_r_val;
+        }
+        *out_l = out_l_val;
+        *out_r = out_r_val;
 
         return true;
     }
@@ -120,16 +152,20 @@ public:
     }
 
     bool active() const { return active_; }
-    bool fading_out() const { return fading_out_; }
+    bool pending_kill() const { return pending_kill_; }
 
 private:
     bool active_ = false;
-    bool fading_out_ = false;
+    bool pending_kill_ = false;
 
-    // Fade-out for grain stealing
-    static constexpr int kStealFadeSamples = 32;
-    static constexpr float steal_fade_inv_ = 1.0f / static_cast<float>(kStealFadeSamples);
-    int steal_fade_counter_ = 0;
+    // Zero-crossing kill with fallback fade
+    static constexpr int kZeroCrossDeadline = 32;
+    static constexpr int kFallbackFadeSamples = 4;
+    static constexpr float kFallbackFadeInv = 1.0f / static_cast<float>(kFallbackFadeSamples);
+    int kill_deadline_ = 0;
+    bool fallback_fade_ = false;
+    int fallback_counter_ = 0;
+    float prev_mono_ = 0.0f;  // mono sum for zero-crossing detection
 
     // Read position (fractional for sub-sample accuracy)
     float read_position_ = 0.0f;
@@ -140,12 +176,14 @@ private:
     float envelope_increment_ = 0.0f;
 
     // Precomputed envelope parameters (derived from shape in Start())
+    // slope_: peak position (0.05=early/decay, 0.5=center/bell, 0.9=late/reversed)
+    // smoothness_: trapezoid ↔ raised-cosine blend
+    // steepness_: rectangularity (high values clip triangle to rectangle)
     float smoothness_ = 1.0f;
     float slope_ = 0.5f;
+    float steepness_ = 1.0f;
     float inv_slope_ = 2.0f;         // 1.0f / slope_
     float inv_one_minus_slope_ = 2.0f; // 1.0f / (1.0f - slope_)
-    enum class SlopeMode : uint8_t { kNormal, kDegenLow, kDegenHigh };
-    SlopeMode slope_mode_ = SlopeMode::kNormal;
 
     // Stereo
     float pan_l_ = 1.0f;
@@ -156,31 +194,36 @@ private:
 
     // Compute envelope value from phase using precomputed smoothness/slope.
     // INLINED — called per-sample per-grain in the hot loop.
+    //
+    // Morphs through 4 shapes as the SHAPE knob sweeps 0→1:
+    //   Rectangle → Snappy Decay → Smooth Bell → Reversed
+    //
+    // Two components blended by smoothness_:
+    //   1. Asymmetric trapezoid: triangle with peak at slope_, steepness
+    //      controls rectangularity (high steepness clips triangle to rect).
+    //   2. Asymmetric raised cosine: Hann window remapped so peak aligns
+    //      with slope_ (not always at center).
     inline float ComputeEnvelope(float phase) {
-        // Asymmetric triangle envelope using precomputed reciprocals
-        // (avoids per-sample division).
+        // Asymmetric triangle with peak at slope_, scaled by steepness.
         float trap;
-        switch (slope_mode_) {
-        case SlopeMode::kDegenLow:
-            trap = 1.0f - phase;
-            break;
-        case SlopeMode::kDegenHigh:
-            trap = phase;
-            break;
-        default:
-            if (phase < slope_) {
-                trap = phase * inv_slope_;
-            } else {
-                trap = (1.0f - phase) * inv_one_minus_slope_;
-            }
-            break;
+        if (phase < slope_) {
+            trap = phase * inv_slope_;
+        } else {
+            trap = (1.0f - phase) * inv_one_minus_slope_;
         }
-        trap = Clamp(trap, 0.0f, 1.0f);
+        trap = Clamp(trap * steepness_, 0.0f, 1.0f);
 
-        // Hann window: 0.5 - 0.5 * cos(2*pi*phase)
-        float hann = 0.5f - 0.5f * CosLookup(phase);
+        // Asymmetric raised cosine with peak at slope_.
+        // Remap phase so [0,slope_]→[0,0.5] and [slope_,1]→[0.5,1].
+        float hann_phase;
+        if (phase < slope_) {
+            hann_phase = phase * inv_slope_ * 0.5f;
+        } else {
+            hann_phase = 0.5f + (phase - slope_) * inv_one_minus_slope_ * 0.5f;
+        }
+        float hann = 0.5f - 0.5f * CosLookup(hann_phase);
 
-        // Blend between trapezoidal and Hann based on smoothness.
+        // Blend between trapezoid and raised cosine.
         return Crossfade(trap, hann, smoothness_);
     }
 };

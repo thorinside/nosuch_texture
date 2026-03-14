@@ -41,6 +41,7 @@ struct BeadsParameters {
 
     // Input config
     float manual_gain_db = NAN;  // NaN = auto-gain
+    bool auto_gain = true;       // true = calibrate-and-lock auto-gain
     bool stereo_input = true;
 };
 

@@ -39,6 +39,7 @@ public:
     bool IsWavetableMode() const;
     int ActiveGrainCount() const;
     float InputLevel() const;
+    void TriggerAutoGainCalibration();
 
 private:
     struct Impl;

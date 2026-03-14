@@ -138,10 +138,6 @@ void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,
     // Detect freeze transitions for crossfade
     if (s.params.freeze != s.prev_freeze) {
         s.recording_buffer.StartFreezeCrossfade();
-        // Flush the decimation accumulator so stale partial samples from
-        // before freeze don't contaminate the first frame written after
-        // unfreeze (or linger unused while frozen).
-        s.recording_buffer.ResetAccumulator();
         s.prev_freeze = s.params.freeze;
     }
 
@@ -178,7 +174,7 @@ void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,
         }
 
         // 1. Auto-gain
-        in = s.auto_gain.Process(in, s.params.manual_gain_db);
+        in = s.auto_gain.Process(in, s.params.manual_gain_db, s.params.auto_gain);
 
         // 2. Quality input processing
         in = s.quality_processor.ProcessInput(in, s.params.quality_mode);
@@ -327,6 +323,10 @@ int BeadsProcessor::ActiveGrainCount() const {
 
 float BeadsProcessor::InputLevel() const {
     return impl_ ? impl_->auto_gain.InputLevel() : 0.0f;
+}
+
+void BeadsProcessor::TriggerAutoGainCalibration() {
+    if (impl_) impl_->auto_gain.StartCalibration();
 }
 
 } // namespace beads

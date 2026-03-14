@@ -14,8 +14,6 @@ void RecordingBuffer::Init(float* buffer, size_t num_frames, int num_channels) {
     write_head_ = 0;
     decimation_factor_ = 1;
     decimation_counter_ = 0;
-    accum_l_ = 0.0f;
-    accum_r_ = 0.0f;
     crossfading_ = false;
     crossfade_counter_ = 0;
 
@@ -32,26 +30,16 @@ void RecordingBuffer::Init(float* buffer, size_t num_frames, int num_channels) {
 void RecordingBuffer::Write(float left, float right) {
     if (size_ == 0 || !buffer_ || channels_ < 2) return;
 
-    // Accumulate samples for decimation
-    accum_l_ += left;
-    accum_r_ += right;
+    // Sample-and-hold decimation: keep every Nth sample.
+    // The SVF pre-filter in QualityProcessor handles anti-aliasing;
+    // averaging here would redundantly smear transient attacks.
     decimation_counter_++;
-
     if (decimation_counter_ < decimation_factor_) return;
-
-    // Write averaged sample
-    float inv_factor = 1.0f / static_cast<float>(decimation_factor_);
-    float avg_l = accum_l_ * inv_factor;
-    float avg_r = accum_r_ * inv_factor;
-
-    // Reset accumulator
-    accum_l_ = 0.0f;
-    accum_r_ = 0.0f;
     decimation_counter_ = 0;
 
     size_t idx = write_head_ * channels_;
-    buffer_[idx] = avg_l;
-    buffer_[idx + 1] = avg_r;
+    buffer_[idx] = left;
+    buffer_[idx + 1] = right;
 
     // Keep the tail in sync when writing into the first kInterpolationTail
     // frames.
@@ -75,21 +63,13 @@ void RecordingBuffer::Clear() {
         (size_ + kInterpolationTail) * static_cast<size_t>(channels_);
     std::memset(buffer_, 0, total_samples * sizeof(float));
     write_head_ = 0;
-    ResetAccumulator();
+    decimation_counter_ = 0;
 }
 
 void RecordingBuffer::SetDecimationFactor(int factor) {
     if (factor < 1) factor = 1;
     decimation_factor_ = factor;
     decimation_counter_ = 0;
-    accum_l_ = 0.0f;
-    accum_r_ = 0.0f;
-}
-
-void RecordingBuffer::ResetAccumulator() {
-    decimation_counter_ = 0;
-    accum_l_ = 0.0f;
-    accum_r_ = 0.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +212,34 @@ float RecordingBuffer::ReadLinear(int channel, float position) const {
 // ---------------------------------------------------------------------------
 
 void RecordingBuffer::StartFreezeCrossfade() {
+    // Scan up to 64 samples backward from write_head_ for a zero crossing
+    // in the mono sum. If found, no crossfade needed.
+    static constexpr int kZeroCrossScan = 64;
+    if (size_ > 0 && buffer_ && channels_ >= 2) {
+        int size_int = static_cast<int>(size_);
+        float prev_mono = 0.0f;
+        // Read the sample at write_head_ - 1
+        int first_frame = (static_cast<int>(write_head_) - 1 + size_int) % size_int;
+        size_t first_idx = static_cast<size_t>(first_frame) * channels_;
+        prev_mono = buffer_[first_idx] + buffer_[first_idx + 1];
+
+        for (int i = 2; i <= kZeroCrossScan && i <= size_int; ++i) {
+            int frame = (static_cast<int>(write_head_) - i + size_int) % size_int;
+            size_t idx = static_cast<size_t>(frame) * channels_;
+            float mono = buffer_[idx] + buffer_[idx + 1];
+            // Sign change with minimum amplitude
+            if ((prev_mono > 1e-5f && mono <= 0.0f) ||
+                (prev_mono < -1e-5f && mono >= 0.0f)) {
+                // Found a zero crossing — no crossfade needed
+                crossfading_ = false;
+                crossfade_counter_ = 0;
+                return;
+            }
+            prev_mono = mono;
+        }
+    }
+
+    // No zero crossing found — fall back to existing crossfade
     crossfading_ = true;
     crossfade_counter_ = kCrossfadeSamples;
 }

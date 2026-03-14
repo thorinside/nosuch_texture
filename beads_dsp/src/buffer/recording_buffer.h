@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include "../../include/beads/types.h"
+#include "../util/interpolation.h"
 
 namespace beads {
 
@@ -50,6 +51,24 @@ public:
         *out_r = p0[1] + frac * (p1[1] - p0[1]);
     }
 
+    // Fast stereo Hermite interpolation for per-grain hot loops.
+    // Precondition: position must be finite and in [0, size_).
+    // Only i-1 needs wrapping; i0+1 and i0+2 read from the interpolation tail.
+    inline void ReadHermiteStereoFast(float position, float* out_l, float* out_r) const {
+        int pos_int = static_cast<int>(position);
+        float frac = position - static_cast<float>(pos_int);
+        size_t i0 = static_cast<size_t>(pos_int);
+        size_t i_1 = (i0 == 0) ? size_ - 1 : i0 - 1;
+        size_t i1 = i0 + 1;  // tail guarantees valid data
+        size_t i2 = i0 + 2;  // tail guarantees valid data
+        const float* p_1 = &buffer_[i_1 * channels_];
+        const float* p0  = &buffer_[i0  * channels_];
+        const float* p1  = &buffer_[i1  * channels_];
+        const float* p2  = &buffer_[i2  * channels_];
+        *out_l = InterpolateHermite(p_1[0], p0[0], p1[0], p2[0], frac);
+        *out_r = InterpolateHermite(p_1[1], p0[1], p1[1], p2[1], frac);
+    }
+
     // Freeze-transition crossfade.  Call StartFreezeCrossfade() when the
     // freeze state changes, then call ProcessFreezeCrossfade() once per
     // sample during the fade.
@@ -60,7 +79,6 @@ public:
     void Clear();
 
     void SetDecimationFactor(int factor);
-    void ResetAccumulator();
     int decimation_factor() const { return decimation_factor_; }
 
     size_t size() const { return size_; }
@@ -84,11 +102,9 @@ private:
     int channels_ = 2;
     size_t write_head_ = 0;
 
-    // Decimation state
+    // Decimation state (sample-and-hold: keep every Nth sample)
     int decimation_factor_ = 1;
     int decimation_counter_ = 0;
-    float accum_l_ = 0.0f;
-    float accum_r_ = 0.0f;
 
     // Freeze crossfade state
     bool crossfading_ = false;

@@ -146,7 +146,7 @@ TEST_CASE("RecordingBuffer: Decimation write rate", "[buffer][decimation]") {
     REQUIRE(buf.write_head() == 25);
 }
 
-TEST_CASE("RecordingBuffer: Decimation averages samples correctly", "[buffer][decimation]") {
+TEST_CASE("RecordingBuffer: Decimation keeps last sample (sample-and-hold)", "[buffer][decimation]") {
     size_t num_frames = 1000;
     size_t bytes = (num_frames + kInterpolationTail) * 2 * sizeof(float);
     std::vector<uint8_t> mem(bytes, 0);
@@ -155,7 +155,7 @@ TEST_CASE("RecordingBuffer: Decimation averages samples correctly", "[buffer][de
     buf.Init(reinterpret_cast<float*>(mem.data()), num_frames, 2);
     buf.SetDecimationFactor(4);
 
-    // Write 4 samples: 0, 2, 4, 6 → average = 3.0
+    // Write 4 samples: 0, 2, 4, 6 → sample-and-hold keeps the last = 6.0
     buf.Write(0.0f, 0.0f);
     buf.Write(2.0f, 2.0f);
     buf.Write(4.0f, 4.0f);
@@ -164,11 +164,11 @@ TEST_CASE("RecordingBuffer: Decimation averages samples correctly", "[buffer][de
     // Read back the one written frame (at position 0)
     float l = buf.ReadLinear(0, 0.0f);
     float r = buf.ReadLinear(1, 0.0f);
-    REQUIRE(l == Approx(3.0f));
-    REQUIRE(r == Approx(3.0f));
+    REQUIRE(l == Approx(6.0f));
+    REQUIRE(r == Approx(6.0f));
 }
 
-TEST_CASE("RecordingBuffer: Accumulator resets on factor change", "[buffer][decimation]") {
+TEST_CASE("RecordingBuffer: Counter resets on factor change", "[buffer][decimation]") {
     size_t num_frames = 1000;
     size_t bytes = (num_frames + kInterpolationTail) * 2 * sizeof(float);
     std::vector<uint8_t> mem(bytes, 0);
@@ -177,23 +177,23 @@ TEST_CASE("RecordingBuffer: Accumulator resets on factor change", "[buffer][deci
     buf.Init(reinterpret_cast<float*>(mem.data()), num_frames, 2);
     buf.SetDecimationFactor(8);
 
-    // Write 3 samples (partial accumulator)
+    // Write 3 samples (partial counter)
     buf.Write(1.0f, 1.0f);
     buf.Write(1.0f, 1.0f);
     buf.Write(1.0f, 1.0f);
     REQUIRE(buf.write_head() == 0);  // Not yet committed
 
-    // Change factor — should reset accumulator
+    // Change factor — should reset counter
     buf.SetDecimationFactor(2);
 
-    // Now write 2 samples with new factor — should commit
+    // Now write 2 samples with new factor — should commit on the 2nd
     buf.Write(10.0f, 10.0f);
     buf.Write(20.0f, 20.0f);
     REQUIRE(buf.write_head() == 1);
 
-    // The committed value should be average of the last 2 (not contaminated by old accum)
+    // Sample-and-hold: the committed value is the last sample (20.0)
     float l = buf.ReadLinear(0, 0.0f);
-    REQUIRE(l == Approx(15.0f));
+    REQUIRE(l == Approx(20.0f));
 }
 
 TEST_CASE("RecordingBuffer: Effective duration scales with decimation", "[buffer][decimation]") {

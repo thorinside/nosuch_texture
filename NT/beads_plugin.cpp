@@ -108,6 +108,7 @@ enum {
     kParamFreeze,
     kParamTriggerMode,
     kParamQualityMode,
+    kParamAutoGain,
     kParamInputGain,
     kParamStereoInput,
 
@@ -122,6 +123,7 @@ static const char* const freezeStrings[] = { "Off", "On", NULL };
 static const char* const triggerStrings[] = { "Latched", "Gated", "Clocked", NULL };
 static const char* const qualityStrings[] = { "HiFi", "Clouds", "Clean LoFi", "Tape", NULL };
 
+static const char* const autoGainStrings[] = { "Off", "On", NULL };
 static const char* const stereoInputStrings[] = { "Mono", "Stereo", NULL };
 
 // ============================================================================
@@ -170,6 +172,7 @@ static const _NT_parameter parameters[] = {
     { .name = "Freeze",       .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = freezeStrings },
     { .name = "Trigger mode", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = triggerStrings },
     { .name = "Quality",      .min = 0, .max = 3, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = qualityStrings },
+    { .name = "Auto gain",    .min = 0, .max = 1, .def = 1, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = autoGainStrings },
     { .name = "Input gain",   .min = -60, .max = 20, .def = 0, .unit = kNT_unitDb_minInf, .scaling = 0, .enumStrings = NULL },
     { .name = "Stereo input", .min = 0, .max = 1, .def = 1, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stereoInputStrings },
 };
@@ -181,7 +184,7 @@ static const _NT_parameter parameters[] = {
 static const uint8_t pageGrain[] = { kParamTime, kParamSize, kParamShape, kParamPitch, kParamDensity };
 static const uint8_t pageMix[] = { kParamFeedback, kParamDryWet, kParamReverb, kParamMacroFeedback, kParamMacroDryWet, kParamMacroReverb };
 static const uint8_t pageAR[] = { kParamTimeAR, kParamSizeAR, kParamShapeAR, kParamPitchAR };
-static const uint8_t pageMode[] = { kParamFreeze, kParamTriggerMode, kParamQualityMode, kParamInputGain, kParamStereoInput };
+static const uint8_t pageMode[] = { kParamFreeze, kParamTriggerMode, kParamQualityMode, kParamAutoGain, kParamInputGain, kParamStereoInput };
 static const uint8_t pageRouting[] = {
     kParamInputL, kParamInputR, kParamOutputL, kParamOutputLMode,
     kParamOutputR, kParamOutputRMode,
@@ -224,6 +227,9 @@ struct _beadsAlgorithm : public _NT_algorithm {
     // Gate edge detection
     bool gateHigh;
     bool freezeHigh;
+
+    // Auto-gain toggle tracking
+    bool prevAutoGain;
 
     // Button press state for SEED (momentary)
     bool seedButtonHeld;
@@ -286,6 +292,7 @@ static _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs,
     alg->gateHigh = false;
     alg->freezeHigh = false;
     alg->seedButtonHeld = false;
+    alg->prevAutoGain = true;  // matches default (On)
 
     // Display
     alg->displayGrainCount = 0;
@@ -299,10 +306,12 @@ static _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs,
 // ============================================================================
 
 static void parameterChanged(_NT_algorithm* self, int p) {
-    // Most parameter processing happens in step() since we need to combine
-    // knob values with CV. Nothing to cache here.
-    (void)self;
-    (void)p;
+    if (p == kParamAutoGain) {
+        _beadsAlgorithm* alg = (_beadsAlgorithm*)self;
+        bool autoOn = (alg->v[kParamAutoGain] != 0);
+        NT_setParameterGrayedOut(NT_algorithmIndex(self),
+                                 kParamInputGain + NT_parameterOffset(), autoOn);
+    }
 }
 
 // ============================================================================
@@ -430,12 +439,19 @@ static void step(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
     p.trigger_mode = (beads::TriggerMode)v[kParamTriggerMode];
     p.quality_mode = (beads::QualityMode)v[kParamQualityMode];
 
-    // Input gain: -60 = auto (NaN), otherwise dB
-    int gainParam = v[kParamInputGain];
-    if (gainParam <= -60)
-        p.manual_gain_db = NAN;
-    else
-        p.manual_gain_db = (float)gainParam;
+    // Auto-gain toggle
+    bool autoGainOn = (v[kParamAutoGain] != 0);
+    p.auto_gain = autoGainOn;
+    if (autoGainOn) {
+        p.manual_gain_db = NAN;  // ignored when auto-gain is on
+        // Detect toggle on → trigger recalibration
+        if (!alg->prevAutoGain) {
+            alg->processor.TriggerAutoGainCalibration();
+        }
+    } else {
+        p.manual_gain_db = (float)v[kParamInputGain];
+    }
+    alg->prevAutoGain = autoGainOn;
 
     p.stereo_input = (v[kParamStereoInput] != 0);
 

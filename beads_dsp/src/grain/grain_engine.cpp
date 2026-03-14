@@ -41,15 +41,14 @@ Grain* GrainEngine::AllocateGrain() {
         }
     }
 
-    // Pool is full — start fading out the oldest grain that isn't already
-    // fading.  This ensures the stolen grain's output ramps to zero
-    // (over ~32 samples) instead of cutting abruptly, which would click.
-    // We do NOT return the fading grain for immediate reuse; the new
-    // trigger is simply dropped.  The grain will become free once the
-    // fade completes.
+    // Pool is full — mark the oldest grain for zero-crossing kill.
+    // The grain will be killed at the next zero crossing (or after a
+    // short fallback fade), avoiding clicks without smearing transients.
+    // We do NOT return the grain for immediate reuse; the new trigger
+    // is simply dropped.
     for (int i = 0; i < kMaxGrains; ++i) {
-        if (!grains_[i].fading_out()) {
-            grains_[i].StartFadeOut();
+        if (!grains_[i].pending_kill()) {
+            grains_[i].StartPendingKill();
             break;
         }
     }
@@ -174,16 +173,19 @@ void GrainEngine::Process(const BeadsParameters& params,
 
     // --- Overlap normalization ---
     // Advance the smoothed count for the full block, then apply the
-    // normalization factor once. The ONE_POLE with 0.01 coefficient
-    // changes < 0.6% across 64 samples, so per-block is inaudible
-    // vs per-sample, and saves 64 sqrt calls.
+    // normalization factor once. The ONE_POLE with 0.05 coefficient
+    // tracks the actual grain count more closely, reducing gain pumping
+    // during rapid steal/replace cycles.
     float count_f = static_cast<float>(active_count);
     for (size_t i = 0; i < num_frames; ++i) {
-        ONE_POLE(overlap_count_lp_, count_f, 0.01f);
+        ONE_POLE(overlap_count_lp_, count_f, 0.05f);
     }
 
-    if (overlap_count_lp_ > 1.0f) {
-        float norm = 1.0f / std::sqrt(overlap_count_lp_);
+    // Clamp minimum to 2.0 so 1-2 grain scenarios aren't normalized
+    // (avoids fighting the natural envelope).
+    float clamped_count = std::max(overlap_count_lp_, 2.0f);
+    if (clamped_count > 2.0f) {
+        float norm = 1.0f / std::sqrt(clamped_count);
         for (size_t i = 0; i < num_frames; ++i) {
             output[i].l *= norm;
             output[i].r *= norm;
