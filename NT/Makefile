@@ -1,7 +1,7 @@
 UNAME_S := $(shell uname -s)
 TARGET ?= hardware
 
-PLUGIN_NAME = nt_beads
+PLUGIN_NAME = nosuch_texture
 
 # Unity build: single source file #includes all beads_dsp .cpp files
 ifeq ($(TARGET),hardware)
