@@ -1,6 +1,6 @@
-# Beads — Disting NT Plugin
+# No Such Texture — Disting NT Plugin
 
-A granular texture synthesizer for the Expert Sleepers Disting NT, based on the Mutable Instruments Beads architecture. Records incoming audio into a circular buffer and replays it through overlapping grains with independent pitch, position, duration, and envelope controls.
+A granular texture synthesizer for the Expert Sleepers Disting NT, based on the Mutable Instruments Beads manual. Records incoming audio into a circular buffer and replays it through overlapping grains with independent pitch, position, duration, and envelope controls.
 
 ## Controls
 
