@@ -18,6 +18,7 @@ public:
         float shape;            // 0-1 envelope shape
         float pan;              // -1 to +1 stereo pan
         int pre_delay;          // Sub-block start offset in samples
+        float gain = 1.0f;      // Amplitude gain (e.g. from MIDI velocity)
     };
 
     void Init();
@@ -74,9 +75,9 @@ public:
             while (read_position_ < 0.0f) read_position_ += buf_size;
         }
 
-        // Apply envelope and panning.
-        float out_l_val = sample_l * env * pan_l_;
-        float out_r_val = sample_r * env * pan_r_;
+        // Apply envelope, gain, and panning.
+        float out_l_val = sample_l * env * gain_ * pan_l_;
+        float out_r_val = sample_r * env * gain_ * pan_r_;
 
         // Zero-crossing kill: detect sign change on mono sum
         // (handles hard-panned content better than L-only).
@@ -184,6 +185,9 @@ private:
     float steepness_ = 1.0f;
     float inv_slope_ = 2.0f;         // 1.0f / slope_
     float inv_one_minus_slope_ = 2.0f; // 1.0f / (1.0f - slope_)
+
+    // Amplitude gain (MIDI velocity etc.)
+    float gain_ = 1.0f;
 
     // Stereo
     float pan_l_ = 1.0f;

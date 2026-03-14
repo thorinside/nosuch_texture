@@ -21,6 +21,7 @@ void Grain::Init() {
     steepness_ = 1.0f;
     inv_slope_ = 2.0f;
     inv_one_minus_slope_ = 2.0f;
+    gain_ = 1.0f;
     pan_l_ = 1.0f;
     pan_r_ = 1.0f;
     pre_delay_ = 0;
@@ -99,6 +100,7 @@ void Grain::Start(const GrainParameters& params) {
     pan_l_ = std::cos(p * kPi * 0.5f);
     pan_r_ = std::sin(p * kPi * 0.5f);
 
+    gain_ = params.gain;
     pre_delay_ = std::max(params.pre_delay, 0);
 }
 

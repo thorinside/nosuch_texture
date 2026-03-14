@@ -39,6 +39,10 @@ struct BeadsParameters {
     TriggerMode trigger_mode = TriggerMode::kLatched;
     QualityMode quality_mode = QualityMode::kHiFi;
 
+    // MIDI note control (set by host when trigger_mode == kMidi)
+    float midi_pitch_offset = 0.0f;   // Semitones offset from MIDI note (C4=0)
+    float midi_velocity_gain = 1.0f;  // 0-1 from velocity/127
+
     // Input config
     float manual_gain_db = NAN;  // NaN = auto-gain
     bool auto_gain = true;       // true = calibrate-and-lock auto-gain

@@ -195,7 +195,59 @@ int GrainScheduler::Process(const BeadsParameters& params, size_t block_size,
         prev_clock_ = clock;
         break;
     }
+    case TriggerMode::kMidi:
+        // Falls through to identical gated logic — MIDI host sets gate/pitch/velocity.
+        goto midi_gated;
     } // switch
+
+    goto scheduler_done;
+
+    midi_gated: {
+        bool gate = params.gate;
+        bool rising_edge = gate && !prev_gate_;
+
+        if (rising_edge) {
+            if (trigger_count < max_triggers) {
+                trigger_samples[trigger_count++] = 0;
+            }
+            gate_phase_ = 0.0f;
+        }
+
+        if (gate && params.density != 0.5f) {
+            if (params.density > 0.5f) {
+                float repeat_rate = DensityToRate(params.density);
+                if (repeat_rate > 0.0f) {
+                    float phase_inc = repeat_rate / sample_rate_;
+                    bool skip_first = rising_edge;
+                    for (size_t i = 0; i < block_size && trigger_count < max_triggers; ++i) {
+                        gate_phase_ += phase_inc;
+                        if (gate_phase_ >= 1.0f) {
+                            gate_phase_ -= 1.0f;
+                            if (skip_first) {
+                                skip_first = false;
+                            } else {
+                                trigger_samples[trigger_count++] = static_cast<int>(i);
+                            }
+                        }
+                    }
+                }
+            } else if (rising_edge && params.density < 0.5f) {
+                float burst_amount = (0.5f - params.density) * 2.0f;
+                int burst_count = static_cast<int>(burst_amount * 15.0f);
+                for (int b = 0; b < burst_count && trigger_count < max_triggers; ++b) {
+                    int offset = static_cast<int>(
+                        (static_cast<float>(b + 1) / static_cast<float>(burst_count + 1))
+                        * static_cast<float>(block_size));
+                    offset = std::min(offset, static_cast<int>(block_size) - 1);
+                    trigger_samples[trigger_count++] = offset;
+                }
+            }
+        }
+
+        prev_gate_ = gate;
+    }
+
+    scheduler_done:
 
     return trigger_count;
 }

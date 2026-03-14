@@ -47,7 +47,8 @@ inline int DecimationFactorForQuality(QualityMode mode) {
 enum class TriggerMode : uint8_t {
     kLatched = 0,
     kGated = 1,
-    kClocked = 2
+    kClocked = 2,
+    kMidi = 3
 };
 
 // Maximum number of simultaneous grains

@@ -94,6 +94,7 @@ Grain::GrainParameters GrainEngine::ComputeGrainParams(
     // (computed before position so we can calculate grain span for headroom)
     float mod_pitch = ar_pitch_.Process(params.pitch, params.pitch_ar,
                                          params.pitch_cv, params.pitch_cv_connected);
+    mod_pitch += params.midi_pitch_offset;
     gp.pitch_ratio = SemitonesToRatio(mod_pitch) * pitch_mod_ratio_ / df_f;
     if (reverse) {
         gp.pitch_ratio = -gp.pitch_ratio;
@@ -136,6 +137,9 @@ Grain::GrainParameters GrainEngine::ComputeGrainParams(
     // --- PAN ---
     // Slight random panning for stereo width.
     gp.pan = random_.NextBipolar() * 0.5f;
+
+    // --- GAIN (MIDI velocity) ---
+    gp.gain = params.midi_velocity_gain;
 
     // --- PRE-DELAY ---
     gp.pre_delay = pre_delay;

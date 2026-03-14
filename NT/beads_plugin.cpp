@@ -111,6 +111,7 @@ enum {
     kParamAutoGain,
     kParamInputGain,
     kParamStereoInput,
+    kParamMidiChannel,
 
     kNumParams
 };
@@ -120,7 +121,8 @@ enum {
 // ============================================================================
 
 static const char* const freezeStrings[] = { "Off", "On", NULL };
-static const char* const triggerStrings[] = { "Latched", "Gated", "Clocked", NULL };
+static const char* const triggerStrings[] = { "Latched", "Gated", "Clocked", "MIDI", NULL };
+static const char* const midiChannelStrings[] = { "All", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", NULL };
 static const char* const qualityStrings[] = { "HiFi", "Clouds", "Clean LoFi", "Tape", NULL };
 
 static const char* const autoGainStrings[] = { "Off", "On", NULL };
@@ -170,11 +172,12 @@ static const _NT_parameter parameters[] = {
 
     // Mode/Config
     { .name = "Freeze",       .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = freezeStrings },
-    { .name = "Trigger mode", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = triggerStrings },
+    { .name = "Trigger mode", .min = 0, .max = 3, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = triggerStrings },
     { .name = "Quality",      .min = 0, .max = 3, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = qualityStrings },
     { .name = "Auto gain",    .min = 0, .max = 1, .def = 1, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = autoGainStrings },
     { .name = "Input gain",   .min = -60, .max = 20, .def = 0, .unit = kNT_unitDb_minInf, .scaling = 0, .enumStrings = NULL },
     { .name = "Stereo input", .min = 0, .max = 1, .def = 1, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stereoInputStrings },
+    { .name = "MIDI channel", .min = 0, .max = 16, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = midiChannelStrings },
 };
 
 // ============================================================================
@@ -184,7 +187,7 @@ static const _NT_parameter parameters[] = {
 static const uint8_t pageGrain[] = { kParamTime, kParamSize, kParamShape, kParamPitch, kParamDensity };
 static const uint8_t pageMix[] = { kParamFeedback, kParamDryWet, kParamReverb, kParamMacroFeedback, kParamMacroDryWet, kParamMacroReverb };
 static const uint8_t pageAR[] = { kParamTimeAR, kParamSizeAR, kParamShapeAR, kParamPitchAR };
-static const uint8_t pageMode[] = { kParamFreeze, kParamTriggerMode, kParamQualityMode, kParamAutoGain, kParamInputGain, kParamStereoInput };
+static const uint8_t pageMode[] = { kParamFreeze, kParamTriggerMode, kParamQualityMode, kParamAutoGain, kParamInputGain, kParamStereoInput, kParamMidiChannel };
 static const uint8_t pageRouting[] = {
     kParamInputL, kParamInputR, kParamOutputL, kParamOutputLMode,
     kParamOutputR, kParamOutputRMode,
@@ -233,6 +236,19 @@ struct _beadsAlgorithm : public _NT_algorithm {
 
     // Button press state for SEED (momentary)
     bool seedButtonHeld;
+
+    // MIDI note state
+    int8_t midiNoteHeld;         // Currently held note number, -1 if none
+    uint8_t midiNoteVelocity;    // Velocity of held note
+    bool midiNoteGate;           // Gate from MIDI note
+    float midiPitchSemitones;    // Pitch offset in semitones (note - 60)
+
+    // MIDI clock state
+    volatile bool midiClockTick; // Set by midiRealtime, consumed by step
+    bool prevMidiClock;          // Edge detection for clock tick
+
+    // MIDI sustain pedal
+    bool midiSustainHeld;
 
     // Display cache (updated from audio thread, read by UI thread)
     volatile int displayGrainCount;
@@ -294,6 +310,15 @@ static _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs,
     alg->seedButtonHeld = false;
     alg->prevAutoGain = true;  // matches default (On)
 
+    // MIDI state
+    alg->midiNoteHeld = -1;
+    alg->midiNoteVelocity = 0;
+    alg->midiNoteGate = false;
+    alg->midiPitchSemitones = 0.0f;
+    alg->midiClockTick = false;
+    alg->prevMidiClock = false;
+    alg->midiSustainHeld = false;
+
     // Display
     alg->displayGrainCount = 0;
     alg->displayInputLevel = 0.0f;
@@ -311,6 +336,50 @@ static void parameterChanged(_NT_algorithm* self, int p) {
         bool autoOn = (alg->v[kParamAutoGain] != 0);
         NT_setParameterGrayedOut(NT_algorithmIndex(self),
                                  kParamInputGain + NT_parameterOffset(), autoOn);
+    }
+}
+
+// ============================================================================
+// MIDI handlers
+// ============================================================================
+
+static void midiRealtime(_NT_algorithm* self, uint8_t byte) {
+    if (byte == 0xF8) {  // MIDI clock tick
+        _beadsAlgorithm* alg = (_beadsAlgorithm*)self;
+        alg->midiClockTick = true;
+    }
+}
+
+static void midiMessage(_NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byte2) {
+    _beadsAlgorithm* alg = (_beadsAlgorithm*)self;
+
+    // Channel filter
+    int paramCh = alg->v[kParamMidiChannel];
+    if (paramCh > 0 && (byte0 & 0x0F) != (paramCh - 1)) return;
+
+    int status = byte0 & 0xF0;
+    switch (status) {
+    case 0x90:  // Note On
+        if (byte2 == 0) goto note_off;  // velocity 0 = note off
+        alg->midiNoteHeld = (int8_t)byte1;
+        alg->midiNoteVelocity = byte2;
+        alg->midiNoteGate = true;
+        alg->midiPitchSemitones = (float)byte1 - 60.0f;  // C4 = original pitch
+        break;
+
+    case 0x80:  // Note Off
+    note_off:
+        if ((int8_t)byte1 == alg->midiNoteHeld) {
+            alg->midiNoteGate = false;
+            alg->midiNoteHeld = -1;
+        }
+        break;
+
+    case 0xB0:  // Control Change
+        if (byte1 == 64) {  // Sustain pedal
+            alg->midiSustainHeld = (byte2 >= 64);
+        }
+        break;
     }
 }
 
@@ -430,14 +499,33 @@ static void step(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
     p.shape_cv_connected = shapeCvConnected;
     p.pitch_cv_connected = pitchCvConnected;
 
-    // Gate: OR of button press and CV
-    p.gate = alg->seedButtonHeld || gateFromCv;
-
-    // Freeze: OR of parameter toggle and CV
-    p.freeze = (v[kParamFreeze] != 0) || freezeFromCv;
-
     p.trigger_mode = (beads::TriggerMode)v[kParamTriggerMode];
     p.quality_mode = (beads::QualityMode)v[kParamQualityMode];
+
+    // Gate: depends on trigger mode
+    if (p.trigger_mode == beads::TriggerMode::kMidi) {
+        p.gate = alg->midiNoteGate;
+        p.midi_pitch_offset = alg->midiPitchSemitones;
+        p.midi_velocity_gain = alg->midiNoteVelocity / 127.0f;
+    } else {
+        p.gate = alg->seedButtonHeld || gateFromCv;
+        p.midi_pitch_offset = 0.0f;
+        p.midi_velocity_gain = 1.0f;
+    }
+
+    // MIDI clock: inject gate pulses in Clocked mode
+    if (p.trigger_mode == beads::TriggerMode::kClocked && alg->midiClockTick) {
+        if (!alg->prevMidiClock) {
+            p.gate = true;  // OR with existing gate for one-block rising edge
+        }
+        alg->prevMidiClock = true;
+        alg->midiClockTick = false;
+    } else if (p.trigger_mode == beads::TriggerMode::kClocked) {
+        alg->prevMidiClock = false;
+    }
+
+    // Freeze: OR of parameter toggle, CV, and MIDI sustain pedal
+    p.freeze = (v[kParamFreeze] != 0) || freezeFromCv || alg->midiSustainHeld;
 
     // Auto-gain toggle
     bool autoGainOn = (v[kParamAutoGain] != 0);
@@ -620,6 +708,7 @@ static const char* triggerLabel(int t) {
     case 0: return "Latch";
     case 1: return "Gate";
     case 2: return "Clock";
+    case 3: return "MIDI";
     default: return "?";
     }
 }
@@ -732,8 +821,8 @@ static const _NT_factory factory = {
     .parameterChanged = parameterChanged,
     .step = step,
     .draw = draw,
-    .midiRealtime = NULL,
-    .midiMessage = NULL,
+    .midiRealtime = midiRealtime,
+    .midiMessage = midiMessage,
     .tags = kNT_tagEffect | kNT_tagDelay,
     .hasCustomUi = hasCustomUi,
     .customUi = customUi,
