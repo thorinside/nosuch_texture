@@ -5,6 +5,7 @@
 #include "../../include/beads/parameters.h"
 #include "../random/random.h"
 #include "../random/attenurandomizer.h"
+#include "../pitch/pitch_quantizer.h"
 #include "grain.h"
 #include "grain_scheduler.h"
 
@@ -25,6 +26,11 @@ public:
 
     int ActiveGrainCount() const;
 
+    // Scale quantization
+    void LoadScale(const double* ratios, uint32_t num_notes) { pitch_quantizer_.loadRatios(ratios, num_notes); }
+    void ClearScale() { pitch_quantizer_.clear(); }
+    void SetScaleRoot(int midi_note) { pitch_quantizer_.set_root(midi_note); }
+
 private:
     Grain grains_[kMaxGrains];
     GrainScheduler scheduler_;
@@ -33,6 +39,7 @@ private:
     Attenurandomizer ar_shape_;
     Attenurandomizer ar_pitch_;
     Random random_;
+    PitchQuantizer pitch_quantizer_;
 
     RecordingBuffer* buffer_ = nullptr;
     float sample_rate_ = 48000.0f;

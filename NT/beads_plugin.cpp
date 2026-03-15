@@ -9,11 +9,14 @@
 #include <cstring>
 #include <cmath>
 #include <distingnt/api.h>
+#include <distingnt/microtuning.h>
+#include <distingnt/wav.h>
 
 // ============================================================================
 // Unity build — include all beads_dsp source files
 // ============================================================================
 
+#include "pitch/pitch_quantizer.cpp"
 #include "random/random.cpp"
 #include "random/attenurandomizer.cpp"
 #include "buffer/recording_buffer.cpp"
@@ -113,6 +116,10 @@ enum {
     kParamStereoInput,
     kParamMidiChannel,
 
+    // Scale quantization
+    kParamScaleFile,
+    kParamScaleRoot,
+
     kNumParams
 };
 
@@ -178,6 +185,10 @@ static const _NT_parameter parameters[] = {
     { .name = "Input gain",   .min = -60, .max = 20, .def = 0, .unit = kNT_unitDb_minInf, .scaling = 0, .enumStrings = NULL },
     { .name = "Stereo input", .min = 0, .max = 1, .def = 1, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stereoInputStrings },
     { .name = "MIDI channel", .min = 0, .max = 16, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = midiChannelStrings },
+
+    // Scale quantization
+    { .name = "Scale file",  .min = 0, .max = 0, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
+    { .name = "Root note",   .min = 0, .max = 127, .def = 60, .unit = kNT_unitMIDINote, .scaling = 0, .enumStrings = NULL },
 };
 
 // ============================================================================
@@ -188,6 +199,7 @@ static const uint8_t pageGrain[] = { kParamTime, kParamSize, kParamShape, kParam
 static const uint8_t pageMix[] = { kParamFeedback, kParamDryWet, kParamReverb, kParamMacroFeedback, kParamMacroDryWet, kParamMacroReverb };
 static const uint8_t pageAR[] = { kParamTimeAR, kParamSizeAR, kParamShapeAR, kParamPitchAR };
 static const uint8_t pageMode[] = { kParamFreeze, kParamTriggerMode, kParamQualityMode, kParamAutoGain, kParamInputGain, kParamStereoInput, kParamMidiChannel };
+static const uint8_t pageScale[] = { kParamScaleFile, kParamScaleRoot };
 static const uint8_t pageRouting[] = {
     kParamInputL, kParamInputR, kParamOutputL, kParamOutputLMode,
     kParamOutputR, kParamOutputRMode,
@@ -201,6 +213,7 @@ static const _NT_parameterPage pages[] = {
     { .name = "Mix",               .numParams = ARRAY_SIZE(pageMix),     .group = 1, .unused = {}, .params = pageMix },
     { .name = "Attenurandomizers", .numParams = ARRAY_SIZE(pageAR),      .group = 1, .unused = {}, .params = pageAR },
     { .name = "Mode",              .numParams = ARRAY_SIZE(pageMode),     .group = 2, .unused = {}, .params = pageMode },
+    { .name = "Scale",             .numParams = ARRAY_SIZE(pageScale),   .group = 2, .unused = {}, .params = pageScale },
     { .name = "Routing",           .numParams = ARRAY_SIZE(pageRouting), .group = 3, .unused = {}, .params = pageRouting },
 };
 
@@ -250,6 +263,17 @@ struct _beadsAlgorithm : public _NT_algorithm {
     // MIDI sustain pedal
     bool midiSustainHeld;
 
+    // Scale quantization / SCL loading
+    _NT_sclRequest sclRequest;
+    _NT_sclNote sclNote[128];
+    char sclName[22];
+    char sclDescription[44];
+    bool cardMounted;
+    volatile bool awaitingCallback;
+    volatile bool scaleDirty;
+    int32_t sclIndex;     // currently loaded scale index (0 = none)
+    mutable _NT_parameter paramDefs[kNumParams];
+
     // Display cache (updated from audio thread, read by UI thread)
     volatile int displayGrainCount;
     volatile float displayInputLevel;
@@ -274,6 +298,14 @@ static inline int clampi(int x, int lo, int hi) {
 // ============================================================================
 // Factory functions
 // ============================================================================
+
+static void sclCallback(void* data) {
+    _beadsAlgorithm* alg = (_beadsAlgorithm*)data;
+    alg->awaitingCallback = false;
+    if (!alg->sclRequest.error && alg->sclRequest.numNotes > 0) {
+        alg->scaleDirty = true;
+    }
+}
 
 static void calculateRequirements(_NT_algorithmRequirements& req, const int32_t* specifications) {
     req.numParameters = kNumParams;
@@ -319,6 +351,27 @@ static _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs,
     alg->prevMidiClock = false;
     alg->midiSustainHeld = false;
 
+    // Scale quantization
+    std::memset(&alg->sclRequest, 0, sizeof(alg->sclRequest));
+    alg->sclRequest.notes = alg->sclNote;
+    alg->sclRequest.maxNotes = 128;
+    alg->sclRequest.nameBuffer = alg->sclName;
+    alg->sclRequest.nameBufferSize = sizeof(alg->sclName);
+    alg->sclRequest.descriptionBuffer = alg->sclDescription;
+    alg->sclRequest.descriptionBufferSize = sizeof(alg->sclDescription);
+    alg->sclRequest.callback = sclCallback;
+    alg->sclRequest.callbackData = alg;
+    alg->sclName[0] = 0;
+    alg->sclDescription[0] = 0;
+    alg->cardMounted = false;
+    alg->awaitingCallback = false;
+    alg->scaleDirty = false;
+    alg->sclIndex = 0;
+
+    // Mutable copy of parameter definitions (for dynamic scale file max)
+    std::memcpy(alg->paramDefs, parameters, sizeof(parameters));
+    alg->parameters = alg->paramDefs;
+
     // Display
     alg->displayGrainCount = 0;
     alg->displayInputLevel = 0.0f;
@@ -331,11 +384,33 @@ static _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs,
 // ============================================================================
 
 static void parameterChanged(_NT_algorithm* self, int p) {
+    _beadsAlgorithm* alg = (_beadsAlgorithm*)self;
     if (p == kParamAutoGain) {
-        _beadsAlgorithm* alg = (_beadsAlgorithm*)self;
         bool autoOn = (alg->v[kParamAutoGain] != 0);
         NT_setParameterGrayedOut(NT_algorithmIndex(self),
                                  kParamInputGain + NT_parameterOffset(), autoOn);
+    }
+    if (p == kParamScaleFile) {
+        int idx = alg->v[kParamScaleFile];
+        if (idx == 0) {
+            // "None" — clear scale
+            alg->processor.ClearScale();
+            alg->sclName[0] = 0;
+            alg->sclIndex = 0;
+        } else if (!alg->awaitingCallback) {
+            // Trigger async SCL load (1-based index → 0-based file index)
+            alg->sclRequest.index = (uint32_t)(idx - 1);
+            alg->sclRequest.error = false;
+            alg->sclRequest.numNotes = 0;
+            alg->awaitingCallback = true;
+            alg->scaleDirty = false;
+            if (!NT_readScl(alg->sclRequest)) {
+                alg->awaitingCallback = false;
+            }
+        }
+    }
+    if (p == kParamScaleRoot) {
+        alg->processor.SetScaleRoot(alg->v[kParamScaleRoot]);
     }
 }
 
@@ -542,6 +617,56 @@ static void step(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
     alg->prevAutoGain = autoGainOn;
 
     p.stereo_input = (v[kParamStereoInput] != 0);
+
+    // --- SD card mount detection: update scale file parameter range ---
+    {
+        bool mounted = NT_isSdCardMounted();
+        if (mounted != alg->cardMounted) {
+            alg->cardMounted = mounted;
+            if (mounted) {
+                uint32_t numScl = NT_getNumScl();
+                alg->paramDefs[kParamScaleFile].max = (int32_t)numScl;
+                NT_updateParameterDefinition(NT_algorithmIndex(self),
+                                             kParamScaleFile);
+                // Re-trigger load if a scale was already selected
+                if (alg->v[kParamScaleFile] != 0) {
+                    parameterChanged(self, kParamScaleFile);
+                }
+            } else {
+                // Card removed: reset parameter range and clear scale
+                alg->paramDefs[kParamScaleFile].max = 0;
+                NT_updateParameterDefinition(NT_algorithmIndex(self),
+                                             kParamScaleFile);
+                alg->processor.ClearScale();
+                alg->sclName[0] = 0;
+                alg->sclIndex = 0;
+            }
+        }
+    }
+
+    // --- Process async SCL load result ---
+    if (alg->scaleDirty) {
+        alg->scaleDirty = false;
+        uint32_t n = alg->sclRequest.numNotes;
+        if (n > 0) {
+            double ratios[128];
+            for (uint32_t i = 0; i < n && i < 128; ++i) {
+                if (alg->sclNote[i].isRatio()) {
+                    ratios[i] = (double)alg->sclNote[i].numerator()
+                              / (double)alg->sclNote[i].denominator();
+                } else {
+                    ratios[i] = std::pow(2.0, alg->sclNote[i].octaves);
+                }
+            }
+            alg->processor.LoadScale(ratios, n);
+            alg->sclIndex = (int32_t)(alg->sclRequest.index + 1);
+        }
+        // Re-check: if the user changed the scale param while the load was
+        // in flight, trigger another load now.
+        if (alg->v[kParamScaleFile] != alg->sclIndex) {
+            parameterChanged(self, kParamScaleFile);
+        }
+    }
 
     // --- Process audio in chunks (numFrames may exceed internal buffer size) ---
     alg->processor.SetParameters(p);
@@ -807,6 +932,31 @@ static bool draw(_NT_algorithm* self) {
 }
 
 // ============================================================================
+// parameterString — custom display for scale file parameter
+// ============================================================================
+
+static int parameterString(_NT_algorithm* self, int p, int value, char* buff) {
+    if (p == kParamScaleFile) {
+        if (value == 0) {
+            strcpy(buff, "None");
+            return 4;
+        } else {
+            _NT_sclInfo info;
+            NT_getSclInfo((uint32_t)(value - 1), info);
+            if (info.name) {
+                strncpy(buff, info.name, kNT_parameterStringSize);
+                buff[kNT_parameterStringSize - 1] = 0;
+                return (int)strlen(buff);
+            } else {
+                strcpy(buff, "?");
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// ============================================================================
 // Factory definition
 // ============================================================================
 
@@ -833,7 +983,7 @@ static const _NT_factory factory = {
     .deserialise = NULL,
     .midiSysEx = NULL,
     .parameterUiPrefix = NULL,
-    .parameterString = NULL,
+    .parameterString = parameterString,
 };
 
 // ============================================================================

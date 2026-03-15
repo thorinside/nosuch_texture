@@ -41,6 +41,11 @@ public:
     float InputLevel() const;
     void TriggerAutoGainCalibration();
 
+    // Scale quantization
+    void LoadScale(const double* ratios, uint32_t num_notes);
+    void ClearScale();
+    void SetScaleRoot(int midi_note);
+
 private:
     struct Impl;
     Impl* impl_ = nullptr;

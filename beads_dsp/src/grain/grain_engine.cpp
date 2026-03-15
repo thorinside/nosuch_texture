@@ -95,6 +95,8 @@ Grain::GrainParameters GrainEngine::ComputeGrainParams(
     float mod_pitch = ar_pitch_.Process(params.pitch, params.pitch_ar,
                                          params.pitch_cv, params.pitch_cv_connected);
     mod_pitch += params.midi_pitch_offset;
+    // Quantize pitch to scale degrees (convert semitones <-> V/oct)
+    mod_pitch = pitch_quantizer_.quantize(mod_pitch / 12.0f) * 12.0f;
     gp.pitch_ratio = SemitonesToRatio(mod_pitch) * pitch_mod_ratio_ / df_f;
     if (reverse) {
         gp.pitch_ratio = -gp.pitch_ratio;

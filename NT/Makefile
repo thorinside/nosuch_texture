@@ -133,7 +133,7 @@ clean:
 	@echo "Cleaned"
 
 help:
-	@echo "NT-Beads Build System"
+	@echo "NT-Texture Build System"
 	@echo ""
 	@echo "Targets:"
 	@echo "  hardware  - Build for distingNT hardware (.o)"

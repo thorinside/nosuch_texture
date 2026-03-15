@@ -1,6 +1,6 @@
 # No Such Texture — Disting NT Plugin
 
-A granular texture synthesizer for the Expert Sleepers Disting NT, based on the Mutable Instruments Beads manual. Records incoming audio into a circular buffer and replays it through overlapping grains with independent pitch, position, duration, and envelope controls.
+A granular texture synthesizer for the Expert Sleepers Disting NT, based on the Mutable Instruments Beads manual. Records incoming audio into a circular buffer and replays it through overlapping grains with independent pitch, position, duration, and envelope controls. da6e42c (Add .scl scale quantization to pitch path)
 
 ## Controls
 
@@ -27,7 +27,7 @@ A granular texture synthesizer for the Expert Sleepers Disting NT, based on the 
 
 **Attenurandomizers** — Time AR, Size AR, Shape AR, Pitch AR
 
-**Mode** — Freeze, Trigger mode, Quality, Input gain, Stereo input
+**Mode** — Freeze, Trigger mode, Quality, Input gain, Stereo input, MIDI channel
 
 **Routing** — Input L/R, Output L/R + modes, all CV inputs, Macro CV
 
@@ -71,10 +71,11 @@ Each attenurandomizer modulates its corresponding grain parameter. When a CV inp
 **Freeze** (Off / On)
 Stops recording and loops the current buffer content. In delay mode, Time selects which slice is played and Size controls the loop length. Toggle with Encoder L press.
 
-**Trigger Mode** (Latched / Gated / Clocked)
+**Trigger Mode** (Latched / Gated / Clocked / MIDI)
 - **Latched**: Grains trigger continuously at the rate set by Density.
 - **Gated**: Grains only trigger while the Seed gate input is high.
-- **Clocked**: Each rising edge on the Seed input triggers a grain. Density subdivides the clock period.
+- **Clocked**: Each rising edge on the Seed input triggers a grain. Density subdivides the clock period. MIDI clock ticks (24 ppqn) also inject gate pulses in this mode, so an external MIDI clock can drive the grain triggers alongside or instead of CV.
+- **MIDI**: MIDI Note On triggers grains. The note number sets the pitch offset (C4 / note 60 = original pitch). Velocity scales grain amplitude. While a note is held, Density controls the repeat rate (same behavior as Gated mode). Note Off stops new grain generation.
 
 **Quality** (HiFi / Clouds / Clean LoFi / Tape)
 Selects the audio processing character:
@@ -89,9 +90,22 @@ At the minimum position (-inf), auto-gain is active: quiet signals are boosted u
 **Stereo Input** (Mono / Stereo)
 When set to Mono, only the left input is used (duplicated to both channels internally). When set to Stereo, both inputs are recorded independently.
 
+**MIDI Channel** (All / 1-16, default All)
+Selects which MIDI channel the plugin responds to. "All" receives on all channels (omni mode). Set to a specific channel to filter out messages on other channels.
+
 ### CV Inputs
 
 All CV inputs expect +/-5V signals. Time, Size, Shape, and Density CVs are normalized to +/-1.0 (divided by 5V). Pitch CV follows 1V/oct (multiplied by 12 semitones/volt). Freeze and Seed gate inputs use 1V rising / 0.5V falling hysteresis thresholds.
+
+### MIDI
+
+The plugin responds to the following MIDI messages:
+
+- **Note On/Off**: In MIDI trigger mode, Note On starts grain generation and Note Off stops it. Note number sets pitch (C4 = original pitch), velocity scales amplitude.
+- **CC64 (Sustain Pedal)**: Value ≥ 64 enables freeze, < 64 disables. OR'd with the Freeze parameter and Freeze CV gate, so any source can activate freeze independently.
+- **MIDI Clock (0xF8)**: In Clocked trigger mode, each MIDI clock tick (24 per quarter note) injects a gate pulse. Works alongside CV gate input — either source can trigger grains.
+
+The NT host already provides generic MIDI-to-parameter mapping, so CC control of knob parameters is handled at the system level without plugin-specific mapping.
 
 ### Macro CV
 
@@ -99,7 +113,7 @@ A single CV input that can simultaneously modulate Feedback, Dry/Wet, and Reverb
 
 ## Wavetable Mode
 
-When both audio inputs remain silent for 10 seconds, Beads automatically crossfades into a built-in wavetable synthesizer. Pitch controls the oscillator frequency and Feedback selects the waveform bank. Audio input reactivates granular mode with a smooth crossfade.
+When both audio inputs remain silent for 10 seconds, Texture automatically crossfades into a built-in wavetable synthesizer. Pitch controls the oscillator frequency and Feedback selects the waveform bank. Audio input reactivates granular mode with a smooth crossfade.
 
 ## Display
 

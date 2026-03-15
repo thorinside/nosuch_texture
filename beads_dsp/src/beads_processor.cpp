@@ -329,4 +329,16 @@ void BeadsProcessor::TriggerAutoGainCalibration() {
     if (impl_) impl_->auto_gain.StartCalibration();
 }
 
+void BeadsProcessor::LoadScale(const double* ratios, uint32_t num_notes) {
+    if (impl_) impl_->grain_engine.LoadScale(ratios, num_notes);
+}
+
+void BeadsProcessor::ClearScale() {
+    if (impl_) impl_->grain_engine.ClearScale();
+}
+
+void BeadsProcessor::SetScaleRoot(int midi_note) {
+    if (impl_) impl_->grain_engine.SetScaleRoot(midi_note);
+}
+
 } // namespace beads
