@@ -172,10 +172,10 @@ static const _NT_parameter parameters[] = {
     { .name = "Reverb",   .min = 0, .max = 100, .def = 0,  .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
     // Attenurandomizers
-    { .name = "Time AR",  .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
-    { .name = "Size AR",  .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
-    { .name = "Shape AR", .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
-    { .name = "Pitch AR", .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+    { .name = "Time AR",  .min = -100, .max = 100, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+    { .name = "Size AR",  .min = -100, .max = 100, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+    { .name = "Shape AR", .min = -100, .max = 100, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+    { .name = "Pitch AR", .min = -100, .max = 100, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
     // Mode/Config
     { .name = "Freeze",       .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = freezeStrings },

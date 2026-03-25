@@ -63,7 +63,7 @@ Built-in reverb applied after the dry/wet mix. Higher quality modes produce brig
 
 ### Attenurandomizers
 
-**Time AR, Size AR, Shape AR, Pitch AR** (-100% to +100%, default 0%)
+**Time AR, Size AR, Shape AR, Pitch AR** (-100% to +100%, default 100%)
 Each attenurandomizer modulates its corresponding grain parameter. When a CV input is connected, the AR knob attenuates (scales) the CV signal. When no CV is connected, the AR knob adds random modulation to each grain trigger, with the knob controlling the depth of randomization. Positive = unipolar random, negative = bipolar random.
 
 ### Mode / Config
