@@ -277,6 +277,11 @@ struct _beadsAlgorithm : public _NT_algorithm {
     // Display cache (updated from audio thread, read by UI thread)
     volatile int displayGrainCount;
     volatile float displayInputLevel;
+    volatile float displayTimeCv;
+    volatile float displaySizeCv;
+    volatile float displayShapeCv;
+    volatile float displayPitchCv;
+    volatile float displayDensityCv;
 };
 
 // ============================================================================
@@ -510,6 +515,13 @@ static void step(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
         densityCv = (densityCv / numFrames) / 5.0f;
     }
 
+    // Update display CV values for UI thread
+    alg->displayTimeCv = timeCv;
+    alg->displaySizeCv = sizeCv;
+    alg->displayShapeCv = shapeCv;
+    alg->displayPitchCv = pitchCv;
+    alg->displayDensityCv = densityCv;
+
     // --- Gate detection with hysteresis ---
     bool gateFromCv = alg->gateHigh;
     if (v[kParamGateCvIn] != 0) {
@@ -551,6 +563,9 @@ static void step(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
     p.shape = v[kParamShape] / 1000.0f;
     p.pitch = v[kParamPitch] / 100.0f;  // cents → semitones
     p.density = v[kParamDensity] / 1000.0f;
+    if (v[kParamDensityCvIn] != 0) {
+        p.density = clampf(p.density + densityCv, 0.0f, 1.0f);
+    }
 
     p.feedback = v[kParamFeedback] / 100.0f;
     p.dry_wet = v[kParamDryWet] / 100.0f;
@@ -853,43 +868,96 @@ static bool draw(_NT_algorithm* self) {
     NT_drawText(0, 14, qualityLabel(v[kParamQualityMode]), 15, kNT_textLeft, kNT_textTiny);
     NT_drawText(30, 14, triggerLabel(v[kParamTriggerMode]), 15, kNT_textLeft, kNT_textTiny);
 
-    // Density value
+    // Density value (with CV offset indicator)
     int len = 0;
     buf[len++] = 'D'; buf[len++] = ':';
     len += NT_floatToString(buf + len, v[kParamDensity] / 1000.0f, 2);
+    if (v[kParamDensityCvIn] != 0) {
+        float dcv = alg->displayDensityCv;
+        if (dcv >= 0.0f) buf[len++] = '+';
+        len += NT_floatToString(buf + len, dcv, 1);
+    }
     buf[len] = 0;
     NT_drawText(80, 14, buf, 15, kNT_textLeft, kNT_textTiny);
 
-    // Pitch value
+    // Pitch value (with CV offset indicator)
     len = 0;
     buf[len++] = 'P'; buf[len++] = ':';
     if (v[kParamPitch] >= 0) buf[len++] = '+';
     len += NT_intToString(buf + len, v[kParamPitch] / 100);
     buf[len++] = 's'; buf[len++] = 't';
+    if (v[kParamPitchCvIn] != 0) {
+        float pitchAr = v[kParamPitchAR] / 100.0f;
+        float pcv = alg->displayPitchCv;
+        if (pitchAr > 0.0f) {
+            int offset = (int)(pitchAr * pcv);
+            if (offset >= 0) buf[len++] = '+';
+            len += NT_intToString(buf + len, offset);
+        } else {
+            buf[len++] = '~';
+        }
+    }
     buf[len] = 0;
     NT_drawText(130, 14, buf, 15, kNT_textLeft, kNT_textTiny);
 
-    // Row 24-31: pot bar graphs (page-dependent)
+    // Row 24-31: pot bar graphs with CV modulation indicators
     int barY = 24;
     int barH = 6;
     int barW = 70;
     int barSpacing = 86;
 
-    // Always show Time/Size/Shape bar graphs (pot-controlled params)
     float potValues[3] = {
         v[kParamTime] / 1000.0f,
         (v[kParamSize] + 1000) / 2000.0f,  // bipolar: -1000..+1000 → 0..1
         v[kParamShape] / 1000.0f,
     };
 
+    // CV/AR params per pot for modulation indicators
+    const int cvParams[3] = { kParamTimeCvIn, kParamSizeCvIn, kParamShapeCvIn };
+    const int arParams[3] = { kParamTimeAR, kParamSizeAR, kParamShapeAR };
+    float displayCv[3] = { alg->displayTimeCv, alg->displaySizeCv, alg->displayShapeCv };
+    // Size is bipolar (-1..+1 → 0..1) so modulation in bar space is halved
+    const float barScale[3] = { 1.0f, 0.5f, 1.0f };
+
     for (int pot = 0; pot < 3; pot++) {
         int x0 = pot * barSpacing + 5;
-        // Background
+        bool cvConnected = (v[cvParams[pot]] != 0);
+        float arAmount = v[arParams[pot]] / 100.0f;
+        float cv = displayCv[pot];
+
+        // Compute spread for random modes (dim fill behind knob)
+        float spread = 0.0f;
+        if (cvConnected && arAmount < 0.0f) {
+            spread = (-arAmount) * std::abs(cv) * barScale[pot];
+        } else if (!cvConnected && arAmount != 0.0f) {
+            spread = std::abs(arAmount) * barScale[pot];
+        }
+
+        // Draw spread fill first (dim, behind knob fill)
+        if (spread > 0.001f) {
+            float sL = clampf(potValues[pot] - spread, 0.0f, 1.0f);
+            float sR = clampf(potValues[pot] + spread, 0.0f, 1.0f);
+            int sLx = x0 + (int)(sL * barW);
+            int sRx = x0 + (int)(sR * barW);
+            if (sRx > sLx) {
+                NT_drawShapeI(kNT_rectangle, sLx, barY, sRx, barY + barH, 6);
+            }
+        }
+
+        // Background outline
         NT_drawShapeI(kNT_box, x0, barY, x0 + barW, barY + barH, 4);
-        // Filled portion
+        // Knob fill (on top of spread)
         int fillW = (int)(potValues[pot] * barW);
         if (fillW > 0) {
             NT_drawShapeI(kNT_rectangle, x0, barY, x0 + fillW, barY + barH, 10);
+        }
+
+        // Deterministic CV tick (AR > 0, CV connected)
+        if (cvConnected && arAmount > 0.0f) {
+            float modOffset = arAmount * cv * barScale[pot];
+            float modPos = clampf(potValues[pot] + modOffset, 0.0f, 1.0f);
+            int modX = x0 + (int)(modPos * barW);
+            NT_drawShapeI(kNT_line, modX, barY - 1, modX, barY + barH + 1, 15);
         }
     }
 
