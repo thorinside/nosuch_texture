@@ -8,6 +8,8 @@ void QualityProcessor::Init(float sample_rate) {
 
     input_lp_l_.Init();
     input_lp_r_.Init();
+    input_lp_l_2_.Init();
+    input_lp_r_2_.Init();
     output_lp_l_.Init();
     output_lp_r_.Init();
 
@@ -15,12 +17,18 @@ void QualityProcessor::Init(float sample_rate) {
     // Process*, but a sane default avoids uninitialized filter state.
     input_lp_l_.SetFrequencyHz(kCloudsInputLpHz, sample_rate_);
     input_lp_r_.SetFrequencyHz(kCloudsInputLpHz, sample_rate_);
+    input_lp_l_2_.SetFrequencyHz(kCloudsInputLpHz, sample_rate_);
+    input_lp_r_2_.SetFrequencyHz(kCloudsInputLpHz, sample_rate_);
     output_lp_l_.SetFrequencyHz(kCleanLoFiLpHz, sample_rate_);
     output_lp_r_.SetFrequencyHz(kCleanLoFiLpHz, sample_rate_);
 
-    // Gentle resonance (Butterworth-ish)
-    input_lp_l_.SetQ(0.707f);
-    input_lp_r_.SetQ(0.707f);
+    // Cascaded 4-pole Butterworth Q stagger for the input chain.
+    // Stage 1: low-Q (closer to real axis); stage 2: high-Q (closer to jω axis).
+    input_lp_l_.SetQ(0.5412f);
+    input_lp_r_.SetQ(0.5412f);
+    input_lp_l_2_.SetQ(1.3066f);
+    input_lp_r_2_.SetQ(1.3066f);
+    // 2-pole Butterworth on the output chain.
     output_lp_l_.SetQ(0.707f);
     output_lp_r_.SetQ(0.707f);
 
@@ -75,11 +83,14 @@ StereoFrame QualityProcessor::ProcessInput(StereoFrame input, QualityMode mode) 
             current_input_cutoff_hz_ = cutoff_hz;
             input_lp_l_.SetFrequencyHz(cutoff_hz, sample_rate_);
             input_lp_r_.SetFrequencyHz(cutoff_hz, sample_rate_);
+            input_lp_l_2_.SetFrequencyHz(cutoff_hz, sample_rate_);
+            input_lp_r_2_.SetFrequencyHz(cutoff_hz, sample_rate_);
         }
     }
 
-    float filtered_l = input_lp_l_.ProcessLP(input.l);
-    float filtered_r = input_lp_r_.ProcessLP(input.r);
+    // 4-pole Butterworth: cascade stage1 (Q=0.5412) → stage2 (Q=1.3066).
+    float filtered_l = input_lp_l_2_.ProcessLP(input_lp_l_.ProcessLP(input.l));
+    float filtered_r = input_lp_r_2_.ProcessLP(input_lp_r_.ProcessLP(input.r));
 
     StereoFrame result;
     switch (mode) {
