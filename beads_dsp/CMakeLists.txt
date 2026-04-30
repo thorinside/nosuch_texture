@@ -13,6 +13,7 @@ add_library(beads_dsp STATIC
     src/fx/reverb.cpp
     src/fx/saturation.cpp
     src/quality/quality_processor.cpp
+    src/pitch/pitch_quantizer.cpp
     src/random/random.cpp
     src/random/attenurandomizer.cpp
     src/input/auto_gain.cpp

@@ -30,3 +30,6 @@ target_include_directories(beads_tests PRIVATE
 include(CTest)
 include(Catch)
 catch_discover_tests(beads_tests)
+
+# Spectral analysis test harness (Phase 1 numerical correction).
+add_subdirectory(spectral)
