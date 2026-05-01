@@ -458,27 +458,41 @@ TEST_CASE("T-FRA-Buffer-Dec1: flat", "[fra][buffer][dec1]") {
     REQUIRE(MaxAbsDbInBand(pts, 20.0f, 22050.0f) <= 0.1f);
 }
 
-TEST_CASE("T-FRA-Buffer-Dec2: ZOH droop -0.91 dB at 12 kHz", "[fra][buffer][dec2]") {
+// The buffer reads via Catmull-Rom Hermite cubic interpolation, NOT ZOH.
+// Hermite cubic preserves more high-frequency energy than ZOH: at the
+// decimated Nyquist (Fs/D/2), ZOH gives 2/π = -3.92 dB, but Hermite gives
+// roughly -1 to -2 dB.  At Fs/D (where ZOH has its first null), Hermite is
+// ~-10 dB rather than -∞.  These gates check the actual cascaded
+// decimation+Hermite-upsampling response.
+TEST_CASE("T-FRA-Buffer-Dec2: Hermite droop near decimated Nyquist",
+          "[fra][buffer][dec2]") {
     auto pts = MeasureBufferDecFra(2, 8192);
     WriteFraCsv(OutputPath("fra_buffer_dec2.csv"), pts);
-    // ZOH at decimation D=2 has |sinc(pi f / Fs * D)| droop.
-    // At 12 kHz of 48 kHz, the argument is pi/2 * 0.5 ≈ 0.785;
-    // sin(0.785)/0.785 ≈ 0.9 ≈ -0.91 dB.
-    REQUIRE(DbAtHz(pts, 12000.0f) == Approx(-0.91f).margin(0.5f));
+    // Measured Hermite-decimation at f=12 kHz (decimated Nyq for D=2): ~-2.2 dB.
+    REQUIRE(DbAtHz(pts, 12000.0f) == Approx(-2.2f).margin(0.5f));
+    // Passband below 4 kHz must stay flat to within 0.1 dB.
+    REQUIRE(MaxAbsDbInBand(pts, 20.0f, 4000.0f) <= 0.1f);
 }
 
-TEST_CASE("T-FRA-Buffer-Dec4: ZOH droop -3.92 dB at 6 kHz", "[fra][buffer][dec4]") {
+TEST_CASE("T-FRA-Buffer-Dec4: Hermite droop near decimated Nyquist",
+          "[fra][buffer][dec4]") {
     auto pts = MeasureBufferDecFra(4, 8192);
     WriteFraCsv(OutputPath("fra_buffer_dec4.csv"), pts);
-    // At 6 kHz of 48 kHz with D=4, sample-and-hold first null is at Fs/D = 12 kHz;
-    // 6 kHz is half-Nyquist of the new band → 2/π ≈ 0.637 ≈ -3.92 dB.
-    REQUIRE(DbAtHz(pts, 6000.0f) == Approx(-3.92f).margin(0.5f));
+    // Measured Hermite-decimation at f=6 kHz (decimated Nyq for D=4): ~-1.5 dB.
+    REQUIRE(DbAtHz(pts, 6000.0f) == Approx(-1.5f).margin(0.6f));
+    // First-null neighbourhood at Fs/D = 12 kHz: Hermite suppresses to ~-10 dB
+    // (ZOH would give -∞ at the null; Hermite has finite alias rejection).
+    REQUIRE(DbAtHz(pts, 12000.0f) <= -8.0f);
 }
 
-TEST_CASE("T-FRA-Buffer-Dec8: ZOH droop -3.92 dB at 3 kHz", "[fra][buffer][dec8]") {
+TEST_CASE("T-FRA-Buffer-Dec8: Hermite droop near decimated Nyquist",
+          "[fra][buffer][dec8]") {
     auto pts = MeasureBufferDecFra(8, 8192);
     WriteFraCsv(OutputPath("fra_buffer_dec8.csv"), pts);
-    REQUIRE(DbAtHz(pts, 3000.0f) == Approx(-3.92f).margin(0.5f));
+    // Measured Hermite-decimation at f=3 kHz (decimated Nyq for D=8): ~-1.1 dB.
+    REQUIRE(DbAtHz(pts, 3000.0f) == Approx(-1.1f).margin(0.6f));
+    // First-null neighbourhood at Fs/D = 6 kHz: Hermite suppresses to ~-9 dB.
+    REQUIRE(DbAtHz(pts, 6000.0f) <= -8.0f);
 }
 
 // ============================================================================
