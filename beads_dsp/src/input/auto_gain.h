@@ -35,7 +35,6 @@ private:
     int calibration_counter_ = 0;
 
     // Timing
-    float attack_coeff_ = 0.0f;     // Fast attack (~1ms)
     float release_coeff_ = 0.0f;    // ~500ms release for calibration
     int calibration_samples_ = 0;   // ~5 seconds of calibration
 

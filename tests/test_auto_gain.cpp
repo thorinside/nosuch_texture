@@ -236,3 +236,35 @@ TEST_CASE("AutoGain: Locked-mode does NOT raise gain on quiet input", "[autogain
     REQUIRE(gain_after >= locked_gain * 0.95f);
 }
 
+TEST_CASE("AutoGain: Low-frequency input doesn't fool peak follower",
+          "[autogain]") {
+    // Drive a 50 Hz sine at amplitude 1.0 for the full calibration window.
+    // The true peak is 1.0; the calibrated output peak must NOT exceed
+    // 1.0 (which would mean clipping at the host).  Earlier the envelope
+    // follower used a ~1 ms attack low-pass that under-tracks low-freq
+    // peaks (~60% of true peak for 50 Hz), causing calibration to set
+    // the gain too high — the bug the user reported on hardware.
+    AutoGain ag;
+    ag.Init(kSampleRate);
+    ag.StartCalibration();
+
+    constexpr int kCalibSamples = static_cast<int>(kSampleRate * 5.5f);
+    float max_output = 0.0f;
+    for (int i = 0; i < kCalibSamples; ++i) {
+        float val = std::sin(static_cast<float>(i) / kSampleRate * 50.0f
+                             * 2.0f * 3.14159265f);
+        StereoFrame in = {val, val};
+        StereoFrame out = ag.Process(in, NAN, true);
+        if (i > kCalibSamples - kSampleRate) {
+            // Track peak in the last ~1 second (after calibration locked).
+            max_output = std::max(max_output, std::abs(out.l));
+        }
+    }
+
+    // Calibration target is -6 dBFS = ~0.501.  Allow some slop for the
+    // gain smoother but the peak must stay well below 1.0 (no clipping).
+    REQUIRE(max_output < 0.85f);
+    // And not absurdly low — we should still hear the signal.
+    REQUIRE(max_output > 0.3f);
+}
+

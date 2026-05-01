@@ -31,10 +31,8 @@ void AutoGain::Init(float sample_rate) {
     state_ = State::kDisabled;
     calibration_counter_ = 0;
 
-    // Fast attack: ~1ms time constant
-    attack_coeff_ = 1.0f - std::exp(-1.0f / (0.001f * sample_rate_));
-
-    // ~500ms release for calibration measurement
+    // ~500ms release for calibration measurement.  Attack is instantaneous
+    // (true peak follower) — see Process().
     release_coeff_ = 1.0f - std::exp(-1.0f / (0.5f * sample_rate_));
 
     // ~5 second calibration window
@@ -55,9 +53,16 @@ StereoFrame AutoGain::Process(StereoFrame input, float manual_gain_db, bool auto
     if (std::isnan(abs_r)) abs_r = 0.0f;
     float peak = std::max(abs_l, abs_r);
 
-    // Envelope follower: fast attack, moderate release
+    // True peak follower: instantaneous attack, slow release.  An attack
+    // low-pass (even at 1 ms) under-tracks low-frequency signals — a 50 Hz
+    // sine only spends a few samples near peak per 20 ms cycle, so the
+    // ONE_POLE attack would only reach ~60% of the true peak.  That
+    // under-reading made the calibration set the gain too high and the
+    // downstream chain clipped.  Snap the envelope to the peak on attack;
+    // release at ~500 ms so the calibration sample-counter sees a stable
+    // estimate of the loudest peak in the calibration window.
     if (peak > envelope_) {
-        ONE_POLE(envelope_, peak, attack_coeff_);
+        envelope_ = peak;
     } else {
         ONE_POLE(envelope_, peak, release_coeff_);
     }
