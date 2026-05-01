@@ -277,6 +277,7 @@ struct _beadsAlgorithm : public _NT_algorithm {
     // Display cache (updated from audio thread, read by UI thread)
     volatile int displayGrainCount;
     volatile float displayInputLevel;
+    volatile float displayCalibrationProgress;
     volatile float displayTimeCv;
     volatile float displaySizeCv;
     volatile float displayShapeCv;
@@ -732,6 +733,7 @@ static void step(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
     // --- Update display cache ---
     alg->displayGrainCount = alg->processor.ActiveGrainCount();
     alg->displayInputLevel = alg->processor.InputLevel();
+    alg->displayCalibrationProgress = alg->processor.CalibrationProgress();
 }
 
 // ============================================================================
@@ -980,16 +982,28 @@ static bool draw(_NT_algorithm* self) {
     NT_drawText(0, 52, buf, 15, kNT_textLeft, kNT_textTiny);
     NT_drawText(12, 52, "grains", 8, kNT_textLeft, kNT_textTiny);
 
-    // Input level meter
+    // Input level meter — doubles as calibration progress while auto-gain is calibrating
     float level = alg->displayInputLevel;
+    float calProgress = alg->displayCalibrationProgress;
+    bool calibrating = calProgress < 1.0f;
     int meterX = 80;
     int meterW = 60;
-    NT_drawText(meterX - 12, 52, "IN", 8, kNT_textLeft, kNT_textTiny);
+    NT_drawText(meterX - 14, 52, calibrating ? "CAL" : "IN", 8,
+                kNT_textLeft, kNT_textTiny);
     NT_drawShapeI(kNT_box, meterX, 52, meterX + meterW, 58, 4);
-    int meterFill = (int)(clampf(level, 0.0f, 1.0f) * meterW);
-    if (meterFill > 0) {
-        int meterColor = (level > 0.9f) ? 15 : 10;
-        NT_drawShapeI(kNT_rectangle, meterX, 52, meterX + meterFill, 58, meterColor);
+    if (calibrating) {
+        // Fill bar shows calibration progress; bright colour distinguishes
+        // it from the input-level display.
+        int progFill = (int)(clampf(calProgress, 0.0f, 1.0f) * meterW);
+        if (progFill > 0) {
+            NT_drawShapeI(kNT_rectangle, meterX, 52, meterX + progFill, 58, 15);
+        }
+    } else {
+        int meterFill = (int)(clampf(level, 0.0f, 1.0f) * meterW);
+        if (meterFill > 0) {
+            int meterColor = (level > 0.9f) ? 15 : 10;
+            NT_drawShapeI(kNT_rectangle, meterX, 52, meterX + meterFill, 58, meterColor);
+        }
     }
 
     // Freeze indicator

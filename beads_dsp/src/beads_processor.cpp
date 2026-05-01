@@ -352,6 +352,10 @@ float BeadsProcessor::InputLevel() const {
     return impl_ ? impl_->auto_gain.InputLevel() : 0.0f;
 }
 
+float BeadsProcessor::CalibrationProgress() const {
+    return impl_ ? impl_->auto_gain.CalibrationProgress() : 1.0f;
+}
+
 void BeadsProcessor::TriggerAutoGainCalibration() {
     if (impl_) impl_->auto_gain.StartCalibration();
 }

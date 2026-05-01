@@ -44,6 +44,8 @@ public:
     bool IsWavetableMode() const;
     int ActiveGrainCount() const;
     float InputLevel() const;
+    // Auto-gain calibration progress: 0.0 → 1.0 while calibrating, 1.0 once locked or disabled.
+    float CalibrationProgress() const;
     void TriggerAutoGainCalibration();
 
     // Scale quantization
