@@ -406,7 +406,11 @@ void RunIrTest(QualityMode mode,
                float rise_us_max,
                float settle_us_max,
                float peak_min) {
-    constexpr std::size_t kFill = 48000;        // 1 s buffer fill
+    // Phase-1 fill must satisfy the grain-engine min_offset for the worst
+    // mode (LoFi df=8 with size=0.5 → min_offset ≈ 6789 decimated frames →
+    // needs ≥ 54312 input samples to write that far past write_head=0).
+    // 2 s gives ample margin for all modes.
+    constexpr std::size_t kFill = 96000;        // 2 s buffer fill
     constexpr std::size_t kCapture = 4096;      // capture window after freeze
 
     Proc proc;
@@ -426,9 +430,9 @@ void RunIrTest(QualityMode mode,
     params.time = 0.0f;
     proc.processor.SetParameters(params);
 
-    // Phase 1: drive 1 s of constant DC = 0.5 so every grain has signal to read
-    // wherever it looks in the buffer.  The grain envelope shape then cleanly
-    // shows up at the output.
+    // Phase 1: drive 2 s of constant DC = 0.5 so every grain has signal to
+    // read wherever it looks in the buffer.  The grain envelope shape then
+    // cleanly shows up at the output.
     std::vector<float> input(kFill, 0.5f);
     std::vector<float> warmup_out(kFill);
     RunMono(proc.processor, input.data(), warmup_out.data(), kFill);
