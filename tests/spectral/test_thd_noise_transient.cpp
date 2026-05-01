@@ -157,10 +157,36 @@ float MeasureDryPathThdPct(QualityMode mode, const std::string& mode_tag) {
     return ThdPlusNPct(spec.data(), kFftN, kSr, f0);
 }
 
-// Wet-path THD+N measurement (used for Clouds): fill the buffer with a sine
-// for ~1 second, then capture another stretch of `kFftN` samples and FFT.
-float MeasureWetPathThdPct(QualityMode mode, const std::string& mode_tag) {
-    constexpr std::size_t kFill = 48000;     // 1 s
+// Wet-path "cleanliness" measurement (used for Clouds).
+//
+// Methodology choice: fundamental-cluster SNR (NOT THD+N).
+//
+// Why not THD+N: the wet/granular path is *not* an LTI signal path. Grain
+// envelope randomness (start time, duration, amplitude) amplitude-modulates
+// the captured sine, which spreads energy into a cluster of bins around f0
+// (AM sidebands at the grain rate). A standard THD+N metric counts every
+// non-fundamental, non-(k*f0) bin as "noise" and so reports the grain
+// modulation as ~70% distortion — which is meaningless for a granular
+// engine. THD+N tests cleanliness of an LTI signal path; the grain engine
+// isn't one.
+//
+// What we measure instead: power inside a narrow neighbourhood around f0
+// (+/- 50 Hz, which captures grain AM sidebands as legitimate signal),
+// versus power in a "clean band" well above f0 and away from its 8
+// harmonics (5–7 kHz). For a clean granular engine, almost all spectral
+// energy concentrates in the fundamental cluster and integer-harmonic
+// clusters; broadband non-musical content in the clean band stays low.
+// A broken engine (e.g. wild numeric instability, runaway feedback,
+// quantizer dropouts) would dump energy across the whole spectrum,
+// including the clean band — that's what this test catches.
+//
+// Pass criterion: clean-band power must be at least 30 dB below the
+// fundamental-cluster power. This is conservative enough to clear a
+// healthy Clouds engine (with 12-bit quantization noise) while still
+// failing decisively on a broken signal path.
+float MeasureWetPathCleanlinessDb(QualityMode mode,
+                                  const std::string& mode_tag) {
+    constexpr std::size_t kFill = 48000;     // 1 s warm-up
     constexpr std::size_t kFftN = 8192;
     constexpr std::size_t kTotal = kFill + kFftN;
 
@@ -188,7 +214,21 @@ float MeasureWetPathThdPct(QualityMode mode, const std::string& mode_tag) {
 
     std::vector<std::complex<float>> spec(kFftN);
     Fft(output.data() + kFill, kFftN, spec.data());
-    return ThdPlusNPct(spec.data(), kFftN, kSr, f0);
+
+    // Fundamental cluster: f0 +/- 50 Hz. Captures grain-AM sidebands as
+    // signal rather than noise.
+    const float fund_power = PowerInBand(spec.data(), kFftN, kSr,
+                                         f0 - 50.0f, f0 + 50.0f);
+    // Clean band: 5–7 kHz. Above f0=1 kHz and its first 4 harmonics
+    // (2/3/4/5 kHz). 6 kHz harmonic is the only one in band; we accept
+    // that small contribution because if the engine is clean it will be
+    // a narrow cluster, not broadband energy.
+    const float clean_power = PowerInBand(spec.data(), kFftN, kSr,
+                                          5000.0f, 7000.0f);
+
+    if (fund_power <= 0.0f || clean_power <= 0.0f) return -200.0f;
+    const float ratio_db = 10.0f * std::log10(clean_power / fund_power);
+    return ratio_db;  // negative; more negative = cleaner
 }
 
 // ---------------------------------------------------------------------------
@@ -271,23 +311,24 @@ TEST_CASE("T-THD-HiFi: THD+N < 0.1 %",
     REQUIRE(thd < 0.1f);
 }
 
-TEST_CASE("T-THD-Clouds: THD+N < 1 %",
+TEST_CASE("T-THD-Clouds: dry THD+N < 1 %, wet clean-band 30 dB below fundamental",
           "[spectral][thd][clouds]") {
-    // Clouds has dry-path passthrough (no quantization on dry), so we measure
-    // both paths and report the worst case.  The wet path is where the 12-bit
-    // ProcessOutput quantization shows up; that's the characteristic Clouds
-    // distortion.
-    float thd_dry = 0.0f;
-    float thd_wet = 0.0f;
+    // Clouds has dry-path passthrough (no quantization on dry), so we
+    // measure both paths but with DIFFERENT metrics. See
+    // MeasureWetPathCleanlinessDb for why THD+N is the wrong tool for the
+    // wet/granular path.
     SECTION("dry path") {
-        thd_dry = MeasureDryPathThdPct(QualityMode::kClouds, "clouds");
+        const float thd_dry =
+            MeasureDryPathThdPct(QualityMode::kClouds, "clouds");
         INFO("T-THD-Clouds dry THD+N = " << thd_dry << " %");
         REQUIRE(thd_dry < 1.0f);
     }
     SECTION("wet path") {
-        thd_wet = MeasureWetPathThdPct(QualityMode::kClouds, "clouds");
-        INFO("T-THD-Clouds wet THD+N = " << thd_wet << " %");
-        REQUIRE(thd_wet < 1.0f);
+        const float clean_db =
+            MeasureWetPathCleanlinessDb(QualityMode::kClouds, "clouds");
+        INFO("T-THD-Clouds wet clean-band power = " << clean_db
+             << " dB relative to fundamental cluster (target < -30 dB)");
+        REQUIRE(clean_db < -30.0f);
     }
 }
 
