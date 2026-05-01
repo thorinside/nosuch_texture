@@ -108,15 +108,21 @@ Grain::GrainParameters GrainEngine::ComputeGrainParams(
     float buf_size_f = static_cast<float>(buffer_->size());
     float offset_frames = mod_time * buf_size_f;
 
-    // Ensure the grain has enough headroom to play without reading past the
-    // write head (forward) or before the oldest valid data (reverse).
-    // Without this, TIME near 0 + large SIZE reads stale/unwritten data.
+    // Ensure the grain has enough headroom on BOTH sides of the write head:
+    //   - lower clamp: don't read so close to write_head that the grain
+    //     overruns it during playback (TIME near 0 + large SIZE).
+    //   - upper clamp: in a circular buffer, offset == buf_size wraps the
+    //     read position right back onto write_head from the OTHER side, so
+    //     the 4-tap Hermite interpolator straddles the wrap boundary and
+    //     reads samples that haven't been written yet (TIME near 1).
+    // Both manifest as audible glitch / "aliasing" noise.
     float span = gp.size * std::fabs(gp.pitch_ratio);
     // Also account for write head advancing during grain lifetime
     float write_advance = gp.size / df_f;
     float min_offset = span + write_advance;
-    min_offset = std::min(min_offset, buf_size_f - 1.0f);
-    offset_frames = std::max(offset_frames, min_offset);
+    min_offset = std::min(min_offset, buf_size_f * 0.5f - 1.0f);
+    float max_offset = buf_size_f - min_offset;
+    offset_frames = Clamp(offset_frames, min_offset, max_offset);
 
     float pos = static_cast<float>(buffer_->write_head()) - offset_frames;
     if (pos < 0.0f) pos += buf_size_f;
