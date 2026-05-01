@@ -76,9 +76,10 @@ StereoFrame AutoGain::Process(StereoFrame input, float manual_gain_db, bool auto
 
     // Auto-gain mode
     if (state_ == State::kCalibrating) {
-        // Track input level and compute gain in real-time during calibration
+        // Track input level and compute gain in real-time during calibration.
+        // Target -kHeadroomDb (not 0 dBFS) so downstream stages have peak room.
         float input_db = FastGainToDb(envelope_);
-        float gain_db = Clamp(-input_db, kMinGainDb, kMaxGainDb);
+        float gain_db = Clamp(-input_db - kHeadroomDb, kMinGainDb, kMaxGainDb);
         if (gain_db != last_gain_db_) {
             last_gain_db_ = gain_db;
             target_gain_ = FastDbToGain(gain_db);

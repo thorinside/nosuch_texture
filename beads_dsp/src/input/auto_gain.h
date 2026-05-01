@@ -38,6 +38,10 @@ private:
 
     static constexpr float kMinGainDb = -60.0f;
     static constexpr float kMaxGainDb = 32.0f;
+    // Headroom reserved for downstream peaks (LP filter ringing, mu-law expansion,
+    // granular reconstruction overlap). Calibration targets -kHeadroomDb instead
+    // of 0 dBFS so the signal leaves room before clipping at the host.
+    static constexpr float kHeadroomDb = 6.0f;
 };
 
 } // namespace beads
