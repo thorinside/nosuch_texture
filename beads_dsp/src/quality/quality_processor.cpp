@@ -10,6 +10,8 @@ void QualityProcessor::Init(float sample_rate) {
     input_lp_r_.Init();
     input_lp_l_2_.Init();
     input_lp_r_2_.Init();
+    input_lp_l_3_.Init();
+    input_lp_r_3_.Init();
     output_lp_l_.Init();
     output_lp_r_.Init();
 
@@ -19,15 +21,20 @@ void QualityProcessor::Init(float sample_rate) {
     input_lp_r_.SetFrequencyHz(kCloudsInputLpHz, sample_rate_);
     input_lp_l_2_.SetFrequencyHz(kCloudsInputLpHz, sample_rate_);
     input_lp_r_2_.SetFrequencyHz(kCloudsInputLpHz, sample_rate_);
+    input_lp_l_3_.SetFrequencyHz(kCloudsInputLpHz, sample_rate_);
+    input_lp_r_3_.SetFrequencyHz(kCloudsInputLpHz, sample_rate_);
     output_lp_l_.SetFrequencyHz(kCleanLoFiLpHz, sample_rate_);
     output_lp_r_.SetFrequencyHz(kCleanLoFiLpHz, sample_rate_);
 
-    // Cascaded 4-pole Butterworth Q stagger for the input chain.
-    // Stage 1: low-Q (closer to real axis); stage 2: high-Q (closer to jω axis).
-    input_lp_l_.SetQ(0.5412f);
-    input_lp_r_.SetQ(0.5412f);
-    input_lp_l_2_.SetQ(1.3066f);
-    input_lp_r_2_.SetQ(1.3066f);
+    // Cascaded 6-pole Butterworth Q stagger for the input chain.
+    // Pole pair angles (from imaginary axis): 75°, 45°, 15° — Q = 1/(2 cos θ).
+    // Stage 1: low-Q (closer to real axis); stage 3: high-Q (closer to jω axis).
+    input_lp_l_.SetQ(0.5176f);
+    input_lp_r_.SetQ(0.5176f);
+    input_lp_l_2_.SetQ(0.7071f);
+    input_lp_r_2_.SetQ(0.7071f);
+    input_lp_l_3_.SetQ(1.9319f);
+    input_lp_r_3_.SetQ(1.9319f);
     // 2-pole Butterworth on the output chain.
     output_lp_l_.SetQ(0.707f);
     output_lp_r_.SetQ(0.707f);
@@ -85,12 +92,19 @@ StereoFrame QualityProcessor::ProcessInput(StereoFrame input, QualityMode mode) 
             input_lp_r_.SetFrequencyHz(cutoff_hz, sample_rate_);
             input_lp_l_2_.SetFrequencyHz(cutoff_hz, sample_rate_);
             input_lp_r_2_.SetFrequencyHz(cutoff_hz, sample_rate_);
+            input_lp_l_3_.SetFrequencyHz(cutoff_hz, sample_rate_);
+            input_lp_r_3_.SetFrequencyHz(cutoff_hz, sample_rate_);
         }
     }
 
-    // 4-pole Butterworth: cascade stage1 (Q=0.5412) → stage2 (Q=1.3066).
-    float filtered_l = input_lp_l_2_.ProcessLP(input_lp_l_.ProcessLP(input.l));
-    float filtered_r = input_lp_r_2_.ProcessLP(input_lp_r_.ProcessLP(input.r));
+    // 6-pole Butterworth: cascade stage1 (Q=0.5176) → stage2 (Q=0.7071)
+    // → stage3 (Q=1.9319).  Each stage at the same cutoff.
+    float filtered_l = input_lp_l_3_.ProcessLP(
+                           input_lp_l_2_.ProcessLP(
+                               input_lp_l_.ProcessLP(input.l)));
+    float filtered_r = input_lp_r_3_.ProcessLP(
+                           input_lp_r_2_.ProcessLP(
+                               input_lp_r_.ProcessLP(input.r)));
 
     StereoFrame result;
     switch (mode) {

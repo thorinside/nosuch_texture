@@ -279,9 +279,11 @@ TEST_CASE("T-FRA-QPInput-Tape: -3 dB at 4.8–5.2 kHz", "[fra][qp][input][tape]"
     REQUIRE(FlatnessDevInBand(pts, 100.0f, 2000.0f) <= 2.0f);
     // -3 dB corner ∈ [4.8k, 5.2k].  Reference (passband mean) is taken from
     // the smoothed curve so noise can't bias it; the actual corner crossing
-    // is found on the raw curve starting at 3 kHz (above the noisy passband
-    // — single-bin noise dips of 3-4 dB are common below 3 kHz and would
-    // produce false crossings if we started searching lower).
+    // is found on the raw curve starting at 4 kHz (above the noisy passband
+    // — single-bin noise dips of 3-4 dB are common below 4 kHz and would
+    // produce false crossings if we started searching lower).  With 6-pole
+    // input rolloff the transition is sharp enough that 4 kHz still leaves
+    // ~1 kHz of margin before the actual -3 dB crossing.
     double sum = 0.0;
     int count = 0;
     for (const auto& p : pts) {
@@ -290,7 +292,7 @@ TEST_CASE("T-FRA-QPInput-Tape: -3 dB at 4.8–5.2 kHz", "[fra][qp][input][tape]"
         ++count;
     }
     const float ref = static_cast<float>(sum / count);
-    const float corner = FindCornerHz(pts_raw, ref - 3.0f, /*lo_hz=*/3000.0f);
+    const float corner = FindCornerHz(pts_raw, ref - 3.0f, /*lo_hz=*/4000.0f);
     REQUIRE(corner >= 4800.0f);
     REQUIRE(corner <= 5200.0f);
 }

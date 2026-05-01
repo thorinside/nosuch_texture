@@ -35,13 +35,15 @@ private:
     float sample_rate_ = 48000.0f;
 
     // LP filters for frequency band limiting per mode.
-    // Input is a cascaded 4-pole Butterworth (two 2-pole SVFs in series, with
-    // Butterworth Q stagger Q1=0.5412 / Q2=1.3066) so the filter ahead of the
-    // decimator gives 24 dB/oct.  Output stays 2-pole.
+    // Input is a cascaded 6-pole Butterworth (three 2-pole SVFs in series, with
+    // Butterworth Q stagger Q1=0.5176 / Q2=0.7071 / Q3=1.9319) so the filter
+    // ahead of the decimator gives 36 dB/oct.  Output stays 2-pole.
     StateVariableFilter input_lp_l_;
     StateVariableFilter input_lp_r_;
     StateVariableFilter input_lp_l_2_;
     StateVariableFilter input_lp_r_2_;
+    StateVariableFilter input_lp_l_3_;
+    StateVariableFilter input_lp_r_3_;
     StateVariableFilter output_lp_l_;
     StateVariableFilter output_lp_r_;
 
