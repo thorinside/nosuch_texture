@@ -124,8 +124,24 @@ Grain::GrainParameters GrainEngine::ComputeGrainParams(
     float max_offset = buf_size_f - min_offset;
     offset_frames = Clamp(offset_frames, min_offset, max_offset);
 
-    float pos = static_cast<float>(buffer_->write_head()) - offset_frames;
-    if (pos < 0.0f) pos += buf_size_f;
+    // Predict the write head at the moment this grain actually starts
+    // emitting (output sample `pre_delay` of this block).  Wet generation
+    // runs before the input loop writes the current block to the buffer,
+    // so write_head() is frozen at block-start until we exit grain
+    // processing — yet each grain's "now" reference should be its own
+    // trigger time, not block-start.  Without this offset, mid-block
+    // grains read from positions that are pre_delay/df frames too old,
+    // producing per-grain phase errors that decohere across grains and
+    // create a comb-shaped response with peaks/dips at the block rate
+    // (~750 Hz for 64-frame blocks at 48 kHz).  The buffer write head
+    // advances by 1 frame every df input samples, so pre_delay output
+    // samples corresponds to pre_delay/df buffer frames.
+    float predicted_write_head =
+        static_cast<float>(buffer_->write_head())
+        + static_cast<float>(pre_delay) / df_f;
+    float pos = predicted_write_head - offset_frames;
+    while (pos >= buf_size_f) pos -= buf_size_f;
+    while (pos < 0.0f) pos += buf_size_f;
     gp.position = pos;
 
     if (reverse) {
