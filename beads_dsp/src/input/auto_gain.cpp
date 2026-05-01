@@ -37,8 +37,8 @@ void AutoGain::Init(float sample_rate) {
     // ~500ms release for calibration measurement
     release_coeff_ = 1.0f - std::exp(-1.0f / (0.5f * sample_rate_));
 
-    // ~1 second calibration window
-    calibration_samples_ = static_cast<int>(sample_rate_);
+    // ~5 second calibration window
+    calibration_samples_ = static_cast<int>(sample_rate_ * 5.0f);
 }
 
 void AutoGain::StartCalibration() {
@@ -88,13 +88,29 @@ StereoFrame AutoGain::Process(StereoFrame input, float manual_gain_db, bool auto
 
         calibration_counter_--;
         if (calibration_counter_ <= 0) {
-            // Lock the current gain
+            // Lock the current gain. Set target_gain_ to the same value so the
+            // ratchet baseline starts at the locked gain — it can only decrease
+            // from here.
             locked_gain_ = gain_;
+            target_gain_ = gain_;
+            last_gain_db_ = FastGainToDb(target_gain_);
             state_ = State::kLocked;
         }
     } else if (state_ == State::kLocked) {
-        // Smoothly hold locked gain — ignore envelope changes
-        ONE_POLE(gain_, locked_gain_, 0.01f);
+        // Asymmetric ratchet: if output peak (envelope * gain) exceeds the
+        // ceiling, attenuate target_gain_ so output returns to the ceiling.
+        // Never raise target_gain_ back up — re-calibration is the only path.
+        float output_peak = envelope_ * target_gain_;
+        static const float kRatchetCeiling = FastDbToGain(kRatchetCeilingDb);
+        if (output_peak > kRatchetCeiling && envelope_ > 1e-10f) {
+            float new_target = kRatchetCeiling / envelope_;
+            if (new_target < target_gain_) {
+                target_gain_ = new_target;
+                last_gain_db_ = FastGainToDb(target_gain_);
+            }
+        }
+        // Smoothly track target_gain_ (which only ever decreases in this state).
+        ONE_POLE(gain_, target_gain_, 0.01f);
     } else {
         // State::kDisabled but auto_gain_on — first enable, start calibrating
         StartCalibration();
@@ -106,6 +122,14 @@ StereoFrame AutoGain::Process(StereoFrame input, float manual_gain_db, bool auto
 
 float AutoGain::InputLevel() const {
     return envelope_;
+}
+
+float AutoGain::CalibrationProgress() const {
+    if (state_ == State::kCalibrating && calibration_samples_ > 0) {
+        return 1.0f - static_cast<float>(calibration_counter_) /
+                          static_cast<float>(calibration_samples_);
+    }
+    return 1.0f;
 }
 
 } // namespace beads

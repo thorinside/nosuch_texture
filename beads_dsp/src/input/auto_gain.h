@@ -18,6 +18,9 @@ public:
     // Get current detected input level (0-1)
     float InputLevel() const;
 
+    // Calibration progress: 0.0 → 1.0 while calibrating, 1.0 once locked or disabled.
+    float CalibrationProgress() const;
+
 private:
     enum class State { kDisabled, kCalibrating, kLocked };
 
@@ -34,7 +37,7 @@ private:
     // Timing
     float attack_coeff_ = 0.0f;     // Fast attack (~1ms)
     float release_coeff_ = 0.0f;    // ~500ms release for calibration
-    int calibration_samples_ = 0;   // ~1 second of calibration
+    int calibration_samples_ = 0;   // ~5 seconds of calibration
 
     static constexpr float kMinGainDb = -60.0f;
     static constexpr float kMaxGainDb = 32.0f;
@@ -42,6 +45,11 @@ private:
     // granular reconstruction overlap). Calibration targets -kHeadroomDb instead
     // of 0 dBFS so the signal leaves room before clipping at the host.
     static constexpr float kHeadroomDb = 6.0f;
+    // Asymmetric ratchet ceiling in locked mode: if output_peak (envelope * gain)
+    // exceeds this threshold we ratchet target_gain_ down (and never raise it back).
+    // -1 dBFS leaves ~5 dB of natural fluctuation room above the -6 dBFS calibration
+    // target before intervening, but stops short of letting downstream peaks clip.
+    static constexpr float kRatchetCeilingDb = -1.0f;
 };
 
 } // namespace beads

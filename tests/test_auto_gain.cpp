@@ -17,9 +17,10 @@ TEST_CASE("AutoGain: Quiet input gets gain greater than 1", "[autogain]") {
     ag.StartCalibration();
 
     // Feed quiet signal (0.01 amplitude) for enough samples for the
-    // envelope to converge and auto-gain to ramp up
+    // envelope to converge and auto-gain to ramp up. Calibration is now
+    // 5 seconds (240000 samples) so we run a bit longer.
     StereoFrame last_out = {0.0f, 0.0f};
-    for (int i = 0; i < 200000; ++i) {
+    for (int i = 0; i < 400000; ++i) {
         StereoFrame in = {0.01f, 0.01f};
         last_out = ag.Process(in, NAN, true);  // auto-gain on
     }
@@ -37,18 +38,20 @@ TEST_CASE("AutoGain: Loud input stays near unity", "[autogain]") {
 
     // Feed loud signal (1.0 amplitude) for a long time
     StereoFrame last_out = {0.0f, 0.0f};
-    for (int i = 0; i < 200000; ++i) {
+    for (int i = 0; i < 400000; ++i) {
         float val = std::sin(static_cast<float>(i) / kSampleRate * 440.0f * 2.0f * 3.14159265f);
         StereoFrame in = {val, val};
         last_out = ag.Process(in, NAN, true);
     }
 
     // With a loud input (peaks at 1.0), auto-gain should be near unity.
-    float input_val = std::sin(200000.0f / kSampleRate * 440.0f * 2.0f * 3.14159265f);
+    // Use index 399999 to match the last_out's actual input sample.
+    float input_val = std::sin(399999.0f / kSampleRate * 440.0f * 2.0f * 3.14159265f);
     float ratio = std::abs(last_out.l) / std::max(std::abs(input_val), 0.001f);
 
-    // Should be near 1.0 (unity gain for loud signal)
-    REQUIRE(ratio > 0.5f);
+    // Calibration targets -kHeadroomDb (-6 dBFS), so locked gain ≈ 0.5.
+    // Ratio should be near 0.5, well above silence and below unity.
+    REQUIRE(ratio > 0.4f);
     REQUIRE(ratio < 3.0f);
 }
 
@@ -78,7 +81,7 @@ TEST_CASE("AutoGain: Auto mode boosts quiet signal more than manual 0dB", "[auto
     ag.StartCalibration();
 
     // In auto mode, quiet signal should get boosted
-    for (int i = 0; i < 200000; ++i) {
+    for (int i = 0; i < 400000; ++i) {
         StereoFrame in = {0.01f, 0.01f};
         ag.Process(in, NAN, true);
     }
@@ -87,7 +90,7 @@ TEST_CASE("AutoGain: Auto mode boosts quiet signal more than manual 0dB", "[auto
     // Then create a new instance with manual gain = 0dB
     AutoGain ag2;
     ag2.Init(kSampleRate);
-    for (int i = 0; i < 200000; ++i) {
+    for (int i = 0; i < 400000; ++i) {
         StereoFrame in = {0.01f, 0.01f};
         ag2.Process(in, 0.0f, false);
     }
@@ -151,18 +154,20 @@ TEST_CASE("AutoGain: Calibrate-and-lock holds steady gain", "[autogain]") {
     ag.Init(kSampleRate);
     ag.StartCalibration();
 
-    // Feed signal during calibration (~1 second = 48000 samples)
-    for (int i = 0; i < 60000; ++i) {
+    // Feed signal during calibration (~5 seconds = 240000 samples). Use
+    // 300000 to ensure full calibration completes and the gain settles.
+    for (int i = 0; i < 300000; ++i) {
         StereoFrame in = {0.05f, 0.05f};
         ag.Process(in, NAN, true);
     }
 
-    // Now in locked state — gain should be stable even if input changes
+    // Now in locked state — gain should be stable when input stays at
+    // the calibrated level (and below the ratchet ceiling).
     StereoFrame out1 = ag.Process({0.05f, 0.05f}, NAN, true);
 
-    // Feed very different signal level for a while
+    // Quiet signal should not affect the locked gain.
     for (int i = 0; i < 50000; ++i) {
-        ag.Process({0.5f, 0.5f}, NAN, true);
+        ag.Process({0.01f, 0.01f}, NAN, true);
     }
 
     // Output with the original level should be similar (gain is locked)
@@ -171,3 +176,63 @@ TEST_CASE("AutoGain: Calibrate-and-lock holds steady gain", "[autogain]") {
     REQUIRE(ratio > 0.8f);
     REQUIRE(ratio < 1.2f);
 }
+
+TEST_CASE("AutoGain: Locked-mode ratchet attenuates on hot input", "[autogain]") {
+    AutoGain ag;
+    ag.Init(kSampleRate);
+    ag.StartCalibration();
+
+    // Calibrate with a quiet 0.05 signal — gain ramps high (~0.05 → ~10
+    // before -6dB headroom, so locked gain ~10 / 2 = ~5).
+    for (int i = 0; i < 300000; ++i) {
+        StereoFrame in = {0.05f, 0.05f};
+        ag.Process(in, NAN, true);
+    }
+
+    // Now hit it with a much hotter signal in locked mode — without the
+    // ratchet, output_peak would be ~0.5 * 5 = 2.5 (way over 0 dBFS).
+    StereoFrame last_out = {0.0f, 0.0f};
+    for (int i = 0; i < 48000; ++i) {  // ~1 second to settle
+        StereoFrame in = {0.5f, 0.5f};
+        last_out = ag.Process(in, NAN, true);
+    }
+
+    // After ratchet settles, output should be at or below the ceiling
+    // (kRatchetCeilingDb = -1 dBFS ≈ 0.891 linear). Allow a small margin
+    // for the ONE_POLE smoothing residual.
+    float output_peak = std::max(std::abs(last_out.l), std::abs(last_out.r));
+    REQUIRE(output_peak < 0.95f);
+}
+
+TEST_CASE("AutoGain: Locked-mode does NOT raise gain on quiet input", "[autogain]") {
+    AutoGain ag;
+    ag.Init(kSampleRate);
+    ag.StartCalibration();
+
+    // Calibrate with 0.5 amplitude signal — locked gain ends up ~unity / 2.
+    for (int i = 0; i < 300000; ++i) {
+        StereoFrame in = {0.5f, 0.5f};
+        ag.Process(in, NAN, true);
+    }
+
+    // Sample the locked gain by measuring output at calibration level.
+    StereoFrame out_at_cal = ag.Process({0.5f, 0.5f}, NAN, true);
+    float locked_gain = std::abs(out_at_cal.l) / 0.5f;
+
+    // Now feed a quiet signal for a while — gain MUST NOT raise.
+    for (int i = 0; i < 200000; ++i) {
+        StereoFrame in = {0.05f, 0.05f};
+        ag.Process(in, NAN, true);
+    }
+
+    // Re-measure with the calibration-level signal. If the gain had
+    // ramped up, the output ratio would be > locked_gain.
+    StereoFrame out_after = ag.Process({0.5f, 0.5f}, NAN, true);
+    float gain_after = std::abs(out_after.l) / 0.5f;
+
+    // Allow tight tolerance — gain should be effectively unchanged.
+    REQUIRE(gain_after <= locked_gain * 1.05f);
+    // And not collapsed either (no spurious ratchet on quiet input).
+    REQUIRE(gain_after >= locked_gain * 0.95f);
+}
+
