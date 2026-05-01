@@ -171,64 +171,6 @@ void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,
     // Precompute wavetable fade increment for this block
     float wt_fade_inc = 1.0f / static_cast<float>(Impl::kWavetableXfadeSamples);
 
-    // --- Per-sample input processing (steps 1-4) ---
-    for (size_t i = 0; i < num_frames; ++i) {
-        StereoFrame in = input[i];
-
-        // Check for wavetable mode activation (silence detection)
-        // Uses a smooth fade to avoid clicks on wavetable transitions
-        bool wt_wants_active = s.wavetable_osc.ShouldActivate(&in, 1);
-        if (wt_wants_active) {
-            // Fade wavetable in
-            s.wavetable_fade = std::min(s.wavetable_fade + wt_fade_inc, 1.0f);
-            StereoFrame wt_out;
-            s.wavetable_osc.Process(s.params.pitch, s.params.feedback, &wt_out, 1);
-            // Crossfade between input and wavetable
-            in.l = in.l * (1.0f - s.wavetable_fade) + wt_out.l * s.wavetable_fade;
-            in.r = in.r * (1.0f - s.wavetable_fade) + wt_out.r * s.wavetable_fade;
-        } else {
-            if (s.wavetable_fade > 0.0f) {
-                // Fade wavetable out before deactivating
-                s.wavetable_fade = std::max(s.wavetable_fade - wt_fade_inc, 0.0f);
-                StereoFrame wt_out;
-                s.wavetable_osc.Process(s.params.pitch, s.params.feedback, &wt_out, 1);
-                in.l = in.l * (1.0f - s.wavetable_fade) + wt_out.l * s.wavetable_fade;
-                in.r = in.r * (1.0f - s.wavetable_fade) + wt_out.r * s.wavetable_fade;
-                if (s.wavetable_fade <= 0.0f) {
-                    s.wavetable_osc.Deactivate();
-                }
-            }
-        }
-
-        // 1. Auto-gain
-        in = s.auto_gain.Process(in, s.params.manual_gain_db, s.params.auto_gain);
-
-        // 2. Quality input processing
-        in = s.quality_processor.ProcessInput(in, s.params.quality_mode);
-
-        // 3. Feedback mix (smoothed to prevent zipper noise)
-        ONE_POLE(s.smoothed_feedback, s.params.feedback, 0.002f);
-        float feedback_gain = s.smoothed_feedback * s.smoothed_feedback;
-        StereoFrame fb = {
-            s.feedback_hp_l.ProcessHP(s.feedback_sample.l),
-            s.feedback_hp_r.ProcessHP(s.feedback_sample.r)
-        };
-        in += fb * feedback_gain;
-        in = s.saturation.LimitFeedback(in, s.params.quality_mode);
-
-        // 4. Record to buffer (unless frozen)
-        if (!s.params.freeze) {
-            s.recording_buffer.Write(in);
-        }
-        if (s.recording_buffer.crossfading()) {
-            s.recording_buffer.ProcessFreezeCrossfade();
-        }
-
-        output[i] = {0.0f, 0.0f};
-    }
-
-    // --- Block-based wet signal generation + output processing (steps 5-10) ---
-    // Process in blocks of kMaxBlockSize.
     // wet/wet_alt live in Impl (DRAM) to keep audio-thread stack usage low.
     StereoFrame* wet = s.wet_buf;
     StereoFrame* wet_alt = s.wet_alt_buf;
@@ -247,11 +189,19 @@ void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,
         s.grain_engine.SetPitchModulation(pitch_mod);
         s.delay_engine.SetPitchModulation(pitch_mod);
 
+        // Generate wet[block] BEFORE the per-sample input loop.  The grain
+        // engine reads from `write_head - min_offset` (hundreds of ms behind
+        // the write head), so wet[i] depends only on buffer state from
+        // before this block — running it up-front is causally correct AND
+        // gives us per-sample wet values to feed back into the input.
+        //
+        // The previous design held s.feedback_sample constant across the
+        // whole input loop, which sample-and-holds the feedback at block
+        // rate — producing the audible aliasing/octave-down artifact users
+        // reported when feedback was non-zero.
         if (crossfading_modes) {
-            // Run both engines and crossfade between them
             s.delay_engine.Process(s.params, s.delay_mode ? wet : wet_alt, block);
             s.grain_engine.Process(s.params, s.delay_mode ? wet_alt : wet, block);
-            // wet = new (current) engine, wet_alt = old (outgoing) engine
         } else {
             if (s.delay_mode) {
                 s.delay_engine.Process(s.params, wet, block);
@@ -270,15 +220,48 @@ void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,
         float dry_gain = CosLookup(dw_phase);
         float wet_gain = CosLookup(dw_phase - 0.25f);
 
-        // Per-sample output processing for this block
+        // Combined per-sample loop: input processing (with per-sample wet
+        // feedback) AND output processing.
         for (size_t i = 0; i < block; ++i) {
-            StereoFrame wet_frame;
+            StereoFrame in_orig = input[offset + i];
+            StereoFrame in = in_orig;
 
+            // Wavetable mode (silence detection + smooth fade)
+            bool wt_wants_active = s.wavetable_osc.ShouldActivate(&in, 1);
+            if (wt_wants_active) {
+                s.wavetable_fade = std::min(s.wavetable_fade + wt_fade_inc, 1.0f);
+                StereoFrame wt_out;
+                s.wavetable_osc.Process(s.params.pitch, s.params.feedback, &wt_out, 1);
+                in.l = in.l * (1.0f - s.wavetable_fade) + wt_out.l * s.wavetable_fade;
+                in.r = in.r * (1.0f - s.wavetable_fade) + wt_out.r * s.wavetable_fade;
+            } else if (s.wavetable_fade > 0.0f) {
+                s.wavetable_fade = std::max(s.wavetable_fade - wt_fade_inc, 0.0f);
+                StereoFrame wt_out;
+                s.wavetable_osc.Process(s.params.pitch, s.params.feedback, &wt_out, 1);
+                in.l = in.l * (1.0f - s.wavetable_fade) + wt_out.l * s.wavetable_fade;
+                in.r = in.r * (1.0f - s.wavetable_fade) + wt_out.r * s.wavetable_fade;
+                if (s.wavetable_fade <= 0.0f) {
+                    s.wavetable_osc.Deactivate();
+                }
+            }
+
+            // 1. Auto-gain
+            in = s.auto_gain.Process(in, s.params.manual_gain_db, s.params.auto_gain);
+
+            // (Quality input processing — including its 6-pole anti-alias LP —
+            // is deferred until AFTER feedback is summed in, so the wet
+            // feedback signal is also bandlimited before the recording
+            // buffer's sample-and-hold decimation in Write().  Otherwise wet
+            // content above the decimated Nyquist would fold into the buffer
+            // each regen cycle and mask grain echoes with alias hash.)
+
+            // Compute per-sample wet_frame (mode crossfade + quality duck +
+            // quality output processing) so feedback can use the *current*
+            // sample's wet, not a block-old value.
+            StereoFrame wet_frame;
             if (s.mode_xfade_counter > 0) {
-                // Crossfade from old engine (wet_alt) to new engine (wet)
                 float xfade = static_cast<float>(s.mode_xfade_counter)
                             / static_cast<float>(Impl::kModeXfadeSamples);
-                // xfade goes from 1.0 (all old) down to 0.0 (all new)
                 wet_frame.l = wet_alt[i].l * xfade + wet[i].l * (1.0f - xfade);
                 wet_frame.r = wet_alt[i].r * xfade + wet[i].r * (1.0f - xfade);
                 s.mode_xfade_counter--;
@@ -289,17 +272,11 @@ void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,
                 wet_frame = wet[i];
             }
 
-            // Quality mode transition: V-shaped duck on wet signal
             if (s.quality_xfade_counter > 0) {
                 float phase = 1.0f - static_cast<float>(s.quality_xfade_counter)
                             / static_cast<float>(Impl::kQualityXfadeSamples);
-                // phase: 0 at start → 1 at end
-                float duck;
-                if (phase < 0.5f) {
-                    duck = 1.0f - phase * 2.0f;   // 1 → 0
-                } else {
-                    duck = (phase - 0.5f) * 2.0f;  // 0 → 1
-                }
+                float duck = (phase < 0.5f) ? (1.0f - phase * 2.0f)
+                                            : ((phase - 0.5f) * 2.0f);
                 wet_frame *= duck;
                 s.quality_xfade_counter--;
             }
@@ -307,19 +284,44 @@ void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,
             // 6. Quality output processing
             wet_frame = s.quality_processor.ProcessOutput(wet_frame, s.params.quality_mode);
 
-            // 7. Capture feedback sample (before reverb)
-            // Guard against NaN/inf poisoning the feedback loop permanently
+            // 7. Capture feedback sample (per-sample now, used for HP below)
             if (std::isfinite(wet_frame.l) && std::isfinite(wet_frame.r)) {
                 s.feedback_sample = wet_frame;
             } else {
                 s.feedback_sample = {0.0f, 0.0f};
             }
 
-            // 8. Dry/wet crossfade (equal-power, gains precomputed per block)
-            StereoFrame in_frame = input[offset + i];
+            // 3. Feedback mix using THIS sample's wet (no block-rate hold)
+            ONE_POLE(s.smoothed_feedback, s.params.feedback, 0.002f);
+            float feedback_gain = s.smoothed_feedback * s.smoothed_feedback;
+            StereoFrame fb = {
+                s.feedback_hp_l.ProcessHP(s.feedback_sample.l),
+                s.feedback_hp_r.ProcessHP(s.feedback_sample.r)
+            };
+            in += fb * feedback_gain;
+            // LimitFeedback is nonlinear in Clouds/CleanLoFi/Tape modes, so
+            // run it BEFORE the anti-alias LP — that way the LP cleans up
+            // any harmonics the soft-clipper introduces, instead of letting
+            // them fold on decimation.
+            in = s.saturation.LimitFeedback(in, s.params.quality_mode);
+
+            // 2. Quality input processing — anti-alias LP (and Tape mu-law)
+            // applied to (dry + feedback) sum, so both paths are bandlimited
+            // before sample-and-hold decimation in Write().
+            in = s.quality_processor.ProcessInput(in, s.params.quality_mode);
+
+            // 4. Record to buffer (unless frozen)
+            if (!s.params.freeze) {
+                s.recording_buffer.Write(in);
+            }
+            if (s.recording_buffer.crossfading()) {
+                s.recording_buffer.ProcessFreezeCrossfade();
+            }
+
+            // 8. Dry/wet crossfade (equal-power)
             StereoFrame mixed = {
-                in_frame.l * dry_gain + wet_frame.l * wet_gain,
-                in_frame.r * dry_gain + wet_frame.r * wet_gain
+                in_orig.l * dry_gain + wet_frame.l * wet_gain,
+                in_orig.r * dry_gain + wet_frame.r * wet_gain
             };
 
             // 9. Reverb
