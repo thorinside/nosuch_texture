@@ -26,7 +26,6 @@ void AutoGain::Init(float sample_rate) {
     envelope_ = 0.0f;
     gain_ = 1.0f;
     target_gain_ = 1.0f;
-    locked_gain_ = 1.0f;
     last_gain_db_ = 0.0f;
     state_ = State::kDisabled;
     calibration_counter_ = 0;
@@ -93,28 +92,20 @@ StereoFrame AutoGain::Process(StereoFrame input, float manual_gain_db, bool auto
 
         calibration_counter_--;
         if (calibration_counter_ <= 0) {
-            // Lock the current gain. Set target_gain_ to the same value so the
-            // ratchet baseline starts at the locked gain — it can only decrease
-            // from here.
-            locked_gain_ = gain_;
+            // Lock the current gain.  target_gain_ holds the locked value;
+            // gain_ smoothly converges to it during locked-state ticks.
             target_gain_ = gain_;
             last_gain_db_ = FastGainToDb(target_gain_);
             state_ = State::kLocked;
         }
     } else if (state_ == State::kLocked) {
-        // Asymmetric ratchet: if output peak (envelope * gain) exceeds the
-        // ceiling, attenuate target_gain_ so output returns to the ceiling.
-        // Never raise target_gain_ back up — re-calibration is the only path.
-        float output_peak = envelope_ * target_gain_;
-        static const float kRatchetCeiling = FastDbToGain(kRatchetCeilingDb);
-        if (output_peak > kRatchetCeiling && envelope_ > 1e-10f) {
-            float new_target = kRatchetCeiling / envelope_;
-            if (new_target < target_gain_) {
-                target_gain_ = new_target;
-                last_gain_db_ = FastGainToDb(target_gain_);
-            }
-        }
-        // Smoothly track target_gain_ (which only ever decreases in this state).
+        // Locked: hold the calibrated gain.  The envelope follower keeps
+        // updating for the input level meter, but the gain does not change
+        // until the next StartCalibration() / TriggerAutoGainCalibration() —
+        // no ratcheting on hot transients (the prior ratchet measured
+        // AutoGain's local output, not the post-DSP-chain bus, so it gave
+        // a false sense of clip protection while still allowing audible
+        // distortion downstream).
         ONE_POLE(gain_, target_gain_, 0.01f);
     } else {
         // State::kDisabled but auto_gain_on — first enable, start calibrating

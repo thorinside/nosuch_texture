@@ -27,8 +27,7 @@ private:
     float sample_rate_ = 48000.0f;
     float envelope_ = 0.0f;        // Peak envelope follower
     float gain_ = 1.0f;            // Current applied gain
-    float target_gain_ = 1.0f;
-    float locked_gain_ = 1.0f;     // Snapshot when entering kLocked
+    float target_gain_ = 1.0f;     // Locked value once calibration completes
     float last_gain_db_ = 0.0f;    // Cache to skip DbToGain when unchanged
 
     State state_ = State::kDisabled;
@@ -46,11 +45,6 @@ private:
     // Bumped from 6 → 10 dB on 2026-05-01 to fix audible distortion when many
     // grains stack constructively or reverb adds tank gain.
     static constexpr float kHeadroomDb = 10.0f;
-    // Asymmetric ratchet ceiling in locked mode: if output_peak (envelope * gain)
-    // exceeds this threshold we ratchet target_gain_ down (and never raise it back).
-    // -1 dBFS leaves ~5 dB of natural fluctuation room above the -6 dBFS calibration
-    // target before intervening, but stops short of letting downstream peaks clip.
-    static constexpr float kRatchetCeilingDb = -1.0f;
 };
 
 } // namespace beads

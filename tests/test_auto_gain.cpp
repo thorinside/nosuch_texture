@@ -161,8 +161,7 @@ TEST_CASE("AutoGain: Calibrate-and-lock holds steady gain", "[autogain]") {
         ag.Process(in, NAN, true);
     }
 
-    // Now in locked state — gain should be stable when input stays at
-    // the calibrated level (and below the ratchet ceiling).
+    // Now in locked state — gain should be stable.
     StereoFrame out1 = ag.Process({0.05f, 0.05f}, NAN, true);
 
     // Quiet signal should not affect the locked gain.
@@ -177,31 +176,33 @@ TEST_CASE("AutoGain: Calibrate-and-lock holds steady gain", "[autogain]") {
     REQUIRE(ratio < 1.2f);
 }
 
-TEST_CASE("AutoGain: Locked-mode ratchet attenuates on hot input", "[autogain]") {
+TEST_CASE("AutoGain: Locked-mode holds gain on hot input (no ratcheting)", "[autogain]") {
     AutoGain ag;
     ag.Init(kSampleRate);
     ag.StartCalibration();
 
-    // Calibrate with a quiet 0.05 signal — gain ramps high (~0.05 → ~20
-    // before -10dB headroom, so locked gain ≈ 20 * 0.316 ≈ 6.3).
+    // Calibrate with 0.5 signal — locked gain ≈ 0.316 / 0.5 = 0.632.
     for (int i = 0; i < 300000; ++i) {
-        StereoFrame in = {0.05f, 0.05f};
+        StereoFrame in = {0.5f, 0.5f};
         ag.Process(in, NAN, true);
     }
+    StereoFrame out_at_cal = ag.Process({0.5f, 0.5f}, NAN, true);
+    float locked_gain = std::abs(out_at_cal.l) / 0.5f;
 
-    // Now hit it with a much hotter signal in locked mode — without the
-    // ratchet, output_peak would be ~0.5 * 6.3 ≈ 3.15 (way over 0 dBFS).
+    // Now hit it with a hotter signal — gain should NOT decrease.  The prior
+    // ratchet was attenuating here against AutoGain's local output ceiling,
+    // but that didn't reflect actual bus-level clipping (downstream grain +
+    // reverb peaks land elsewhere).  Removing the ratchet keeps gain locked
+    // until the next explicit StartCalibration() call.
     StereoFrame last_out = {0.0f, 0.0f};
-    for (int i = 0; i < 48000; ++i) {  // ~1 second to settle
-        StereoFrame in = {0.5f, 0.5f};
+    for (int i = 0; i < 48000; ++i) {
+        StereoFrame in = {1.0f, 1.0f};
         last_out = ag.Process(in, NAN, true);
     }
 
-    // After ratchet settles, output should be at or below the ceiling
-    // (kRatchetCeilingDb = -1 dBFS ≈ 0.891 linear). Allow a small margin
-    // for the ONE_POLE smoothing residual.
-    float output_peak = std::max(std::abs(last_out.l), std::abs(last_out.r));
-    REQUIRE(output_peak < 0.95f);
+    float observed_gain = std::abs(last_out.l) / 1.0f;
+    REQUIRE(observed_gain >= locked_gain * 0.99f);
+    REQUIRE(observed_gain <= locked_gain * 1.01f);
 }
 
 TEST_CASE("AutoGain: Locked-mode does NOT raise gain on quiet input", "[autogain]") {
