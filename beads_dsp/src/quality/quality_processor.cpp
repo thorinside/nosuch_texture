@@ -125,11 +125,13 @@ StereoFrame QualityProcessor::ProcessInput(StereoFrame input, QualityMode mode) 
         case QualityMode::kTape: {
             // Mono sum
             float mono = (filtered_l + filtered_r) * 0.5f;
-            // Add subtle tape hiss
+            // Add subtle tape hiss in linear domain
             float hiss = noise_gen_.NextBipolar() * kTapeHissLevel;
             mono += hiss;
-            // Mu-law compression
-            mono = MuLawCompress(mono, 64.0f);
+            // Linear samples written to recording buffer; saturation on output.
+            // (The previous MuLawCompress here put the buffer into a nonlinear
+            // coordinate space where grain interp/envelope/summation produced
+            // ~5x level inflation and harsh full-scale clipping at the expand.)
             result = { mono, mono };
             break;
         }
@@ -189,17 +191,13 @@ StereoFrame QualityProcessor::ProcessOutput(StereoFrame input, QualityMode mode)
             break;
 
         case QualityMode::kTape: {
-            // Mu-law expansion.  The output LP was already ticked above
-            // with the raw (compressed) input, which keeps the filter
-            // state tracking the signal.  The LP result (lp_l/lp_r)
-            // applied to the compressed signal is a reasonable
-            // approximation; applying MuLawExpand *before* LP and
-            // re-filtering would double-tick the SVF.  Instead, expand
-            // the already-filtered result.
-            result = {
-                MuLawExpand(lp_l, 64.0f),
-                MuLawExpand(lp_r, 64.0f)
-            };
+            // Soft saturation on the linear post-LP signal for tape warmth and
+            // overload protection.  drive=1.2 gives a gentle small-signal boost
+            // (~+1.6 dB) and asymptotic limiting near ±1 — replaces the prior
+            // mu-law codec which incorrectly applied compression to the
+            // recording buffer and produced harsh clipping on grain sums.
+            constexpr float kTapeDrive = 1.2f;
+            result = { SoftClip(kTapeDrive * lp_l), SoftClip(kTapeDrive * lp_r) };
             break;
         }
     }

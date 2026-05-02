@@ -555,34 +555,36 @@ TEST_CASE("T-IR-LoFi: grain envelope rise 20-80 ms, peak >= -10 dB",
               /*peak_min=*/0.3162f);
 }
 
-// Tape is the inverse: mu-law expand of the freeze boundary produces a
-// peak at sample 0 (rise≈0), so we skip the rise gate and check the decay
-// settle time instead.  Settle ~85 ms is the grain envelope length.
-TEST_CASE("T-IR-Tape: settle 50-150 ms, peak >= -8 dB",
+// Tape (post-mu-law-removal): linear buffer + density=1.0 produces a
+// plateau output near peak through the entire capture, so neither rise nor
+// settle is meaningful — gate peak only.  SoftClip(1.2*x) on the post-LP
+// linear sum maps the steady DC=0.5 input to ~0.54 output (≈ -5.4 dB).
+TEST_CASE("T-IR-Tape: peak >= -6 dB",
           "[spectral][transient][tape]") {
     RunIrTest(QualityMode::kTape, "tape",
               /*rise_min=*/0.0f, /*rise_max=*/0.0f,
-              /*settle_min=*/50000.0f, /*settle_max=*/150000.0f,
-              /*peak_min=*/0.3981f);
+              /*settle_min=*/0.0f, /*settle_max=*/0.0f,
+              /*peak_min=*/0.5012f);
 }
 
 // ===========================================================================
-// T-MULAW-Round
+// T-Tape-Roundtrip: tape mode preserves level within the SoftClip drive band
 // ===========================================================================
 
-TEST_CASE("T-MULAW-Round: input ~ output through compress->expand",
-          "[spectral][mulaw][tape]") {
+TEST_CASE("T-Tape-Roundtrip: input ~ SoftClip(drive*input) through tape pipeline",
+          "[spectral][tape]") {
     constexpr std::size_t kSettle = 4096;
     constexpr std::size_t kMeasure = 8192;
     constexpr std::size_t kTotal = kSettle + kMeasure;
     constexpr float kAmp = 0.5f;
+    // Tape output saturator: SoftClip(1.2 * x).  At x=0.5: 0.6*(27+0.36)/(27+3.24)
+    // = 0.5429.  LP at 5 kHz is essentially passthrough at 1 kHz, so the
+    // expected peak is close to that analytic value.
+    constexpr float kExpected = 0.5429f;
 
     QualityProcessor q;
     q.Init(kSr);
 
-    // Bin-align 1 kHz to the FFT length so the post-LP attenuation is sampled
-    // cleanly.  (We don't FFT here, but the alignment also gives us a clean
-    // peak.)
     const float f0 = NearestBinHz(1000.0f, kMeasure, kSr);
 
     std::vector<float> sine(kTotal);
@@ -596,15 +598,15 @@ TEST_CASE("T-MULAW-Round: input ~ output through compress->expand",
         roundtrip[i] = out.l;
     }
 
-    WriteSamplesCsv(OutputPath("mulaw_round_input.csv"),
+    WriteSamplesCsv(OutputPath("tape_round_input.csv"),
                     sine.data(), kTotal);
-    WriteSamplesCsv(OutputPath("mulaw_round_output.csv"),
+    WriteSamplesCsv(OutputPath("tape_round_output.csv"),
                     roundtrip.data(), kTotal);
 
     const float peak = PeakAbs(roundtrip.data() + kSettle, kMeasure);
-    INFO("T-MULAW-Round peak = " << peak
-         << " (target band " << 0.95f * kAmp << " .. " << 1.05f * kAmp << ")");
+    INFO("T-Tape-Roundtrip peak = " << peak
+         << " (target " << kExpected << " ± 5%)");
 
-    REQUIRE(peak >= 0.95f * kAmp);
-    REQUIRE(peak <= 1.05f * kAmp);
+    REQUIRE(peak >= 0.95f * kExpected);
+    REQUIRE(peak <= 1.05f * kExpected);
 }
