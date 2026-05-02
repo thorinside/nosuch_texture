@@ -59,8 +59,10 @@ static constexpr int kMaxGrains = 20;
 // Decimation extends effective duration: HiFi 4s, Clouds 8s, Tape 16s, LoFi 32s.
 static constexpr size_t kDefaultBufferFrames = 48000 * 4;  // 192000 frames
 
-// Reverb delay memory size (12 partitioned delay lines, ~12K samples needed)
-static constexpr size_t kReverbBufferSize = 16384;
+// Reverb delay memory size (12 partitioned delay lines).
+// Sized for the 96 kHz worst case: scaled delays sum to ~24000 floats.
+// At 48 kHz only ~12000 floats are actually used.
+static constexpr size_t kReverbBufferSize = 24576;
 
 // Processing block size (kept small to limit stack usage; the Process() loop
 // handles arbitrary num_frames by iterating in chunks of this size)

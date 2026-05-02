@@ -504,14 +504,14 @@ TEST_CASE("T-FRA-Buffer-Dec8: Hermite droop near decimated Nyquist",
 
 namespace {
 
-std::vector<FraPoint> MeasureReverbFra(float lp, std::size_t n = 32768) {
+std::vector<FraPoint> MeasureReverbFra(float lp_hz, std::size_t n = 32768) {
     std::vector<float> mem(kReverbBufferSize, 0.0f);
     Reverb rev;
     rev.Init(mem.data(), kReverbBufferSize, kSampleRate);
     rev.SetAmount(1.0f);
     rev.SetDecay(0.5f);
     rev.SetDiffusion(0.7f);
-    rev.SetLpCutoff(lp);
+    rev.SetLpCutoffHz(lp_hz);
 
     auto grid = StandardFraGrid();
     return IrFra([&](float x) {
@@ -524,7 +524,7 @@ std::vector<FraPoint> MeasureReverbFra(float lp, std::size_t n = 32768) {
 }  // namespace
 
 TEST_CASE("T-FRA-Reverb-HiFi: -3 dB ≥ 6 kHz", "[fra][reverb][hifi]") {
-    auto pts_raw = MeasureReverbFra(0.7f);
+    auto pts_raw = MeasureReverbFra(9000.0f);
     WriteFraCsv(OutputPath("fra_reverb_hifi.csv"), pts_raw);
 
     // Reverb's magnitude response is comb-filter-modulated (lots of ripple
@@ -544,11 +544,27 @@ float ReverbCornerHz(const std::vector<FraPoint>& pts) {
     auto sm = SmoothFra(pts, /*window=*/9);
     return FindRelativeCornerHz(sm, 3.0f, 100.0f, 1000.0f);
 }
+
+// Mean magnitude (dB) of a smoothed reverb FRA in [lo_hz, hi_hz].
+// More robust than corner-detection for comparing dark reverb modes whose
+// rolloff is too steep for a single -3 dB crossing to land cleanly.
+float ReverbBandMeanDb(const std::vector<FraPoint>& pts,
+                      float lo_hz, float hi_hz) {
+    auto sm = SmoothFra(pts, /*window=*/9);
+    double sum = 0.0;
+    int count = 0;
+    for (const auto& p : sm) {
+        if (p.hz < lo_hz || p.hz > hi_hz) continue;
+        sum += static_cast<double>(p.db);
+        ++count;
+    }
+    return (count > 0) ? static_cast<float>(sum / count) : 0.0f;
+}
 }  // namespace
 
 TEST_CASE("T-FRA-Reverb-Clouds: warmer than HiFi", "[fra][reverb][clouds]") {
-    auto pts_hifi = MeasureReverbFra(0.7f);
-    auto pts = MeasureReverbFra(0.6f);
+    auto pts_hifi = MeasureReverbFra(9000.0f);
+    auto pts = MeasureReverbFra(7000.0f);
     WriteFraCsv(OutputPath("fra_reverb_clouds.csv"), pts);
 
     const float corner_hifi = ReverbCornerHz(pts_hifi);
@@ -559,27 +575,147 @@ TEST_CASE("T-FRA-Reverb-Clouds: warmer than HiFi", "[fra][reverb][clouds]") {
 }
 
 TEST_CASE("T-FRA-Reverb-LoFi: warmer still", "[fra][reverb][lofi]") {
-    auto pts_clouds = MeasureReverbFra(0.6f);
-    auto pts = MeasureReverbFra(0.5f);
+    auto pts_clouds = MeasureReverbFra(7000.0f);
+    auto pts = MeasureReverbFra(5000.0f);
     WriteFraCsv(OutputPath("fra_reverb_lofi.csv"), pts);
 
-    const float corner_clouds = ReverbCornerHz(pts_clouds);
-    const float corner_lofi = ReverbCornerHz(pts);
-    REQUIRE(corner_lofi > 0.0f);
-    REQUIRE(corner_clouds > 0.0f);
-    REQUIRE(corner_lofi < corner_clouds);
+    // Compare 5-7 kHz band mean: LoFi's 5 kHz biquad attenuates this region
+    // (cutoff is at the lower edge), while Clouds' 7 kHz biquad mostly passes
+    // it. Difference is small — only 40% of the wet output is downstream of
+    // the LP (the rest is the L1 modulated delay tap, which sees only
+    // LP-filtered cross-coupled feedback). Threshold is set close to the
+    // observed separation to act as a regression gate, not a tight spec.
+    const float band_clouds = ReverbBandMeanDb(pts_clouds, 5000.0f, 7000.0f);
+    const float band_lofi   = ReverbBandMeanDb(pts,        5000.0f, 7000.0f);
+    INFO("clouds 5-7kHz mean: " << band_clouds << " dB; lofi: " << band_lofi << " dB");
+    REQUIRE(band_lofi < band_clouds - 0.3f);
 }
 
 TEST_CASE("T-FRA-Reverb-Tape: warmest", "[fra][reverb][tape]") {
-    auto pts_lofi = MeasureReverbFra(0.5f);
-    auto pts = MeasureReverbFra(0.3f);
+    auto pts_lofi = MeasureReverbFra(5000.0f);
+    auto pts = MeasureReverbFra(2500.0f);
     WriteFraCsv(OutputPath("fra_reverb_tape.csv"), pts);
 
-    const float corner_lofi = ReverbCornerHz(pts_lofi);
-    const float corner_tape = ReverbCornerHz(pts);
-    REQUIRE(corner_tape > 0.0f);
-    REQUIRE(corner_lofi > 0.0f);
-    REQUIRE(corner_tape < corner_lofi);
+    // 2-4 kHz band mean: Tape's 2.5 kHz biquad places its corner inside this
+    // band, while LoFi's 5 kHz biquad passes it. This produces a clean ~3 dB
+    // separation — far above the LP-in-feedback-only mixing dilution that
+    // makes other bands less informative.
+    const float band_lofi = ReverbBandMeanDb(pts_lofi, 2000.0f, 4000.0f);
+    const float band_tape = ReverbBandMeanDb(pts,      2000.0f, 4000.0f);
+    INFO("lofi 2-4kHz mean: " << band_lofi << " dB; tape: " << band_tape << " dB");
+    REQUIRE(band_tape < band_lofi - 2.0f);
+}
+
+// ============================================================================
+// Reverb sample-rate invariance — verifies the SR-scaling fix landed in
+// reverb.cpp (delay lengths, mod depth, mod headroom, biquad LP cutoff in Hz).
+//
+// The reported bug: at 96 kHz, an audible resonance peak appeared at ~4 kHz
+// when feeding a triangle wave with auto-gain ON. Root cause was hardcoded
+// delay-line sample counts — the modal density doubled and every mode shifted
+// up by 2x in Hz space, dropping a strong tank mode into the audible band.
+//
+// Pre-fix behavior we want to catch:
+//   - Modes shifted up in frequency at higher SR
+//   - Effective LP cutoff doubled from ~9 kHz @ 48k to ~14 kHz @ 96k (alpha-
+//     based one-pole was SR-blind)
+//
+// Post-fix: smoothed FRA in the 100 Hz–16 kHz band must match across rates
+// to within a few dB everywhere, with no broad cluster of energy moving up.
+// ============================================================================
+
+namespace {
+
+// As MeasureReverbFra but with explicit sample rate.
+std::vector<FraPoint> MeasureReverbFraAtSr(float sr, float lp_hz,
+                                           std::size_t n = 32768) {
+    std::vector<float> mem(kReverbBufferSize, 0.0f);
+    Reverb rev;
+    rev.Init(mem.data(), kReverbBufferSize, sr);
+    rev.SetAmount(1.0f);
+    rev.SetDecay(0.5f);
+    rev.SetDiffusion(0.7f);
+    rev.SetLpCutoffHz(lp_hz);
+
+    auto grid = StandardFraGrid();
+    return IrFra([&](float x) {
+        float ol, oR;
+        rev.Process(x, x, &ol, &oR);
+        return ol;
+    }, grid, n, sr, /*impulse_amp=*/1.0f);
+}
+
+// Maximum absolute (smoothed) dB difference between two FRAs in [lo, hi].
+float MaxSmoothedDiffDb(const std::vector<FraPoint>& a,
+                        const std::vector<FraPoint>& b,
+                        float lo_hz, float hi_hz) {
+    auto sa = SmoothFra(a, /*window=*/9);
+    auto sb = SmoothFra(b, /*window=*/9);
+    float worst = 0.0f;
+    const std::size_t n = std::min(sa.size(), sb.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        if (sa[i].hz < lo_hz || sa[i].hz > hi_hz) continue;
+        const float d = std::fabs(sa[i].db - sb[i].db);
+        if (d > worst) worst = d;
+    }
+    return worst;
+}
+
+}  // namespace
+
+TEST_CASE("T-REV-NoModeShift-96k: peaks don't move when SR doubles",
+          "[rev][nopeak][sr]") {
+    // Run the same reverb config (HiFi LP) at 48 kHz and 96 kHz. Smoothed
+    // responses (averaged over comb-filter ripple) should track within a few
+    // dB across the audible band. Without SR scaling the 96 kHz curve would
+    // diverge sharply (modes shifted up, LP cutoff doubled).
+    auto pts_48 = MeasureReverbFraAtSr(48000.0f, 9000.0f);
+    auto pts_96 = MeasureReverbFraAtSr(96000.0f, 9000.0f);
+    WriteFraCsv(OutputPath("fra_reverb_hifi_48k.csv"), pts_48);
+    WriteFraCsv(OutputPath("fra_reverb_hifi_96k.csv"), pts_96);
+
+    // Most of the audible band: smoothed traces must agree within 4 dB.
+    const float worst_mid = MaxSmoothedDiffDb(pts_48, pts_96, 200.0f, 4000.0f);
+    INFO("Worst smoothed Δ in 200–4000 Hz: " << worst_mid << " dB");
+    REQUIRE(worst_mid < 4.0f);
+
+    // Above the LP corner the comb ripple is naturally smaller and traces
+    // should converge even more tightly.
+    const float worst_hi = MaxSmoothedDiffDb(pts_48, pts_96, 4000.0f, 12000.0f);
+    INFO("Worst smoothed Δ in 4–12 kHz: " << worst_hi << " dB");
+    REQUIRE(worst_hi < 4.0f);
+}
+
+TEST_CASE("T-REV-LP-96k: LP cutoff stays in Hz across SR",
+          "[rev][nopeak][sr][lp]") {
+    // Tape mode (LP @ 2.5 kHz) at both 48k and 96k. Verify that:
+    //   1. The 2-4 kHz band attenuation tracks across rates (LP corner in Hz
+    //      is honored at 96k, not pinned to a normalized alpha)
+    //   2. Above 8 kHz the response is well attenuated at BOTH rates
+    auto pts_48 = MeasureReverbFraAtSr(48000.0f, 2500.0f);
+    auto pts_96 = MeasureReverbFraAtSr(96000.0f, 2500.0f);
+    WriteFraCsv(OutputPath("fra_reverb_tape_48k.csv"), pts_48);
+    WriteFraCsv(OutputPath("fra_reverb_tape_96k.csv"), pts_96);
+
+    // 2-4 kHz mean (around the LP corner): rates should agree within 3 dB.
+    const float band_48 = ReverbBandMeanDb(pts_48, 2000.0f, 4000.0f);
+    const float band_96 = ReverbBandMeanDb(pts_96, 2000.0f, 4000.0f);
+    INFO("Tape 2-4kHz mean: 48k=" << band_48 << " dB, 96k=" << band_96 << " dB");
+    REQUIRE(std::fabs(band_48 - band_96) < 3.0f);
+
+    // Both rates: 8-16 kHz must be at least 4 dB below the 1-2 kHz passband
+    // mean, confirming the LP is engaged at both SRs.  The drop is bounded
+    // by the wet-output mix: dl1_out (60%) bypasses the LP for the first
+    // reflection, so the global high-frequency attenuation is shallower than
+    // the LP's standalone response would suggest.
+    const float pass_48 = ReverbBandMeanDb(pts_48, 1000.0f, 2000.0f);
+    const float pass_96 = ReverbBandMeanDb(pts_96, 1000.0f, 2000.0f);
+    const float hi_48   = ReverbBandMeanDb(pts_48, 8000.0f, 16000.0f);
+    const float hi_96   = ReverbBandMeanDb(pts_96, 8000.0f, 16000.0f);
+    INFO("48k: passband=" << pass_48 << " dB, 8-16k=" << hi_48 << " dB");
+    INFO("96k: passband=" << pass_96 << " dB, 8-16k=" << hi_96 << " dB");
+    REQUIRE(hi_48 < pass_48 - 4.0f);
+    REQUIRE(hi_96 < pass_96 - 4.0f);
 }
 
 // ============================================================================

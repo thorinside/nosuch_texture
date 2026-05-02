@@ -63,6 +63,15 @@ public:
         if (++write_ptr_ >= size_) write_ptr_ = 0;
     }
 
+    // Zero the buffer and reset the write head — used when reverb
+    // amount transitions to 0 so re-engaging starts from silence.
+    inline void Reset() {
+        write_ptr_ = 0;
+        if (buffer_) {
+            for (size_t i = 0; i < size_; ++i) buffer_[i] = 0.0f;
+        }
+    }
+
     size_t size() const { return size_; }
 
 private:

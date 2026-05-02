@@ -22,6 +22,9 @@ BeadsProcessor::MemoryRequirements BeadsProcessor::GetMemoryRequirements(float s
     size_t impl_bytes = AlignUp(sizeof(Impl));
     size_t recording_bytes =
         (kDefaultBufferFrames + kInterpolationTail) * 2 * sizeof(float);
+    // kReverbBufferSize is sized for 96 kHz (worst case) — see types.h.
+    // At 48 kHz the reverb only fills ~half of it; the rest is unused tail.
+    // Total DTC stays under STM32H7's 128 KB DTCM.
     size_t reverb_bytes = kReverbBufferSize * sizeof(float);
 
     // DRAM always includes reverb as fallback (when DTC not available)
@@ -141,15 +144,17 @@ void BeadsProcessor::SetParameters(const BeadsParameters& params) {
     impl_->reverb.SetDecay(0.3f + params.reverb * 0.65f);
     impl_->reverb.SetDiffusion(0.7f);
 
-    // Quality mode affects reverb LP: Tape=warmest, HiFi=brightest
-    float reverb_lp;
+    // Quality mode affects reverb LP cutoff (Hz): Tape=warmest, HiFi=brightest.
+    // Hz targets approximate the prior one-pole alpha cutoffs at 48 kHz but now
+    // scale correctly across sample rates and use a steeper Butterworth biquad.
+    float reverb_lp_hz;
     switch (params.quality_mode) {
-        case QualityMode::kTape:      reverb_lp = 0.3f; break;
-        case QualityMode::kCleanLoFi: reverb_lp = 0.5f; break;
-        case QualityMode::kClouds:    reverb_lp = 0.6f; break;
-        default:                      reverb_lp = 0.7f; break;
+        case QualityMode::kTape:      reverb_lp_hz = 2500.0f; break;
+        case QualityMode::kCleanLoFi: reverb_lp_hz = 5000.0f; break;
+        case QualityMode::kClouds:    reverb_lp_hz = 7000.0f; break;
+        default:                      reverb_lp_hz = 9000.0f; break;
     }
-    impl_->reverb.SetLpCutoff(reverb_lp);
+    impl_->reverb.SetLpCutoffHz(reverb_lp_hz);
 }
 
 void BeadsProcessor::Process(const StereoFrame* input, StereoFrame* output,

@@ -1,62 +1,113 @@
 #include "reverb.h"
 #include "../util/cosine_table.h"
+#include <algorithm>
 #include <cmath>
 
 namespace beads {
+
+namespace {
+
+inline size_t ScaleLen(size_t ref_len, float sr_scale) {
+    float scaled = static_cast<float>(ref_len) * sr_scale;
+    long rounded = std::lroundf(scaled);
+    if (rounded < 1) rounded = 1;
+    return static_cast<size_t>(rounded);
+}
+
+}  // namespace
 
 void Reverb::Init(float* buffer, size_t buffer_size, float sample_rate) {
     sample_rate_ = sample_rate;
 
     amount_ = 0.0f;
+    prev_amount_ = 0.0f;
     decay_ = 0.5f;
     diffusion_ = 0.7f;
-    lp_ = 0.7f;
 
     lfo_phase_ = 0.0f;
     lfo_increment_ = (sample_rate_ > 0.0f) ? (kLfoHz / sample_rate_) : 0.0f;
 
-    lp_state_l_ = 0.0f;
-    lp_state_r_ = 0.0f;
+    feedback_l_ = 0.0f;
+    feedback_r_ = 0.0f;
+
     dc_estimate_l_ = 0.0f;
     dc_estimate_r_ = 0.0f;
     dc_block_coeff_ = (sample_rate > 0.0f)
         ? (kTwoPi * kDcBlockTargetHz / sample_rate)
         : 0.0005f;
-    feedback_l_ = 0.0f;
-    feedback_r_ = 0.0f;
 
-    // Partition the shared buffer into 12 individual delay lines.
-    // Each delay line gets its own contiguous region.
+    // Sample-rate scale relative to the reference design (48 kHz).
+    const float sr_scale = (sample_rate_ > 0.0f)
+        ? (sample_rate_ / kReferenceSampleRate)
+        : 1.0f;
+
+    // Modulation depth and headroom scale with sample rate so the LFO
+    // produces the same fractional pitch deviation in real time at any SR.
+    mod_depth_samples_ = kModDepthRef * sr_scale;
+    const size_t mod_headroom = static_cast<size_t>(
+        std::ceil(static_cast<float>(kModHeadroomRef) * sr_scale));
+
+    // Compute scaled delay lengths.
+    const size_t ap_in_1_len = ScaleLen(kApIn1Len, sr_scale);
+    const size_t ap_in_2_len = ScaleLen(kApIn2Len, sr_scale);
+    const size_t ap_in_3_len = ScaleLen(kApIn3Len, sr_scale);
+    const size_t ap_in_4_len = ScaleLen(kApIn4Len, sr_scale);
+
+    delay_l1_len_ = ScaleLen(kDelayL1Len, sr_scale);
+    const size_t ap_l1_len  = ScaleLen(kApL1Len,  sr_scale);
+    const size_t ap_l2_len  = ScaleLen(kApL2Len,  sr_scale);
+    const size_t delay_l2_len = ScaleLen(kDelayL2Len, sr_scale);
+
+    delay_r1_len_ = ScaleLen(kDelayR1Len, sr_scale);
+    const size_t ap_r1_len  = ScaleLen(kApR1Len,  sr_scale);
+    const size_t ap_r2_len  = ScaleLen(kApR2Len,  sr_scale);
+    const size_t delay_r2_len = ScaleLen(kDelayR2Len, sr_scale);
+
+    // Partition the shared buffer into 12 individual delay lines.  The two
+    // modulated delay lines (delay_l1_, delay_r1_) need extra headroom for
+    // LFO variation past the base length.
+    initialized_ = true;
     float* ptr = buffer;
     size_t used = 0;
 
     auto alloc = [&](DelayLine& dl, size_t len) {
-        if (used + len <= buffer_size) {
+        if (buffer && used + len <= buffer_size) {
             dl.Init(ptr, len);
             ptr += len;
             used += len;
         } else {
             dl.Init(nullptr, 0);
+            initialized_ = false;
         }
     };
 
     // Input diffusion allpasses
-    alloc(ap_in_1_, kApIn1Len);
-    alloc(ap_in_2_, kApIn2Len);
-    alloc(ap_in_3_, kApIn3Len);
-    alloc(ap_in_4_, kApIn4Len);
+    alloc(ap_in_1_, ap_in_1_len);
+    alloc(ap_in_2_, ap_in_2_len);
+    alloc(ap_in_3_, ap_in_3_len);
+    alloc(ap_in_4_, ap_in_4_len);
 
     // Left tank
-    alloc(delay_l1_, kDelayL1Len + kModHeadroom);
-    alloc(ap_l1_, kApL1Len);
-    alloc(ap_l2_, kApL2Len);
-    alloc(delay_l2_, kDelayL2Len);
+    alloc(delay_l1_, delay_l1_len_ + mod_headroom);
+    alloc(ap_l1_,    ap_l1_len);
+    alloc(ap_l2_,    ap_l2_len);
+    alloc(delay_l2_, delay_l2_len);
 
     // Right tank
-    alloc(delay_r1_, kDelayR1Len + kModHeadroom);
-    alloc(ap_r1_, kApR1Len);
-    alloc(ap_r2_, kApR2Len);
-    alloc(delay_r2_, kDelayR2Len);
+    alloc(delay_r1_, delay_r1_len_ + mod_headroom);
+    alloc(ap_r1_,    ap_r1_len);
+    alloc(ap_r2_,    ap_r2_len);
+    alloc(delay_r2_, delay_r2_len);
+
+    // Butterworth LP biquads in the feedback path.  Default cutoff matches
+    // the prior 0.7 alpha @ 48 kHz one-pole (~9.2 kHz) — call SetLpCutoffHz
+    // to override per quality mode.
+    lp_l_.Init();
+    lp_r_.Init();
+    lp_l_.SetQ(0.7071068f);
+    lp_r_.SetQ(0.7071068f);
+    lp_l_.SetFrequencyHz(9000.0f, sample_rate_);
+    lp_r_.SetFrequencyHz(9000.0f, sample_rate_);
 }
 
 void Reverb::SetAmount(float amount) {
@@ -71,14 +122,52 @@ void Reverb::SetDiffusion(float diff) {
     diffusion_ = Clamp(diff, 0.0f, 1.0f);
 }
 
-void Reverb::SetLpCutoff(float cutoff) {
-    lp_ = Clamp(cutoff, 0.0f, 1.0f);
+void Reverb::SetLpCutoffHz(float hz) {
+    // Clamp to a sensible range; SVF clamps internally too but be explicit.
+    float clamped = Clamp(hz, 100.0f, 0.45f * sample_rate_);
+    lp_l_.SetFrequencyHz(clamped, sample_rate_);
+    lp_r_.SetFrequencyHz(clamped, sample_rate_);
+}
+
+void Reverb::ResetState() {
+    feedback_l_ = 0.0f;
+    feedback_r_ = 0.0f;
+    dc_estimate_l_ = 0.0f;
+    dc_estimate_r_ = 0.0f;
+    lp_l_.Reset();
+    lp_r_.Reset();
+    ap_in_1_.Reset();
+    ap_in_2_.Reset();
+    ap_in_3_.Reset();
+    ap_in_4_.Reset();
+    delay_l1_.Reset();
+    ap_l1_.Reset();
+    ap_l2_.Reset();
+    delay_l2_.Reset();
+    delay_r1_.Reset();
+    ap_r1_.Reset();
+    ap_r2_.Reset();
+    delay_r2_.Reset();
 }
 
 void Reverb::Process(float left_in, float right_in,
                      float* left_out, float* right_out) {
-    // Fast path: reverb fully off
+    // Fast path: reverb fully off.  On the >0 → 0 edge, scrub state so a
+    // later re-engage doesn't dump a stale tank into the wet path.
     if (amount_ <= 0.0f) {
+        if (prev_amount_ > 0.0f) {
+            ResetState();
+        }
+        prev_amount_ = amount_;
+        *left_out = left_in;
+        *right_out = right_in;
+        return;
+    }
+    prev_amount_ = amount_;
+
+    // Bypass if allocation failed (insufficient buffer).  Without this guard
+    // a null-buffer DelayLine would dereference inside ProcessAllpass.
+    if (!initialized_) {
         *left_out = left_in;
         *right_out = right_in;
         return;
@@ -92,9 +181,6 @@ void Reverb::Process(float left_in, float right_in,
     }
     fb = Clamp(fb, 0.0f, 0.9995f);
 
-    // LP coefficient for feedback loop (one-pole).
-    float lp_coeff = lp_;
-
     // Diffusion coefficient for allpass stages
     float ap_coeff = diffusion_ * 0.75f;
 
@@ -106,8 +192,8 @@ void Reverb::Process(float left_in, float right_in,
 
     float lfo_cos = CosLookup(lfo_phase_);
     float lfo_sin = CosLookup(lfo_phase_ - 0.25f);  // sin = cos(phase - pi/2)
-    float mod_l = kModDepth * lfo_sin;
-    float mod_r = kModDepth * lfo_cos;
+    float mod_l = mod_depth_samples_ * lfo_sin;
+    float mod_r = mod_depth_samples_ * lfo_cos;
 
     // ------------------------------------------------------------------
     // Input diffusion: 4 series allpass filters
@@ -137,23 +223,23 @@ void Reverb::Process(float left_in, float right_in,
     // LEFT PATH --------------------------------------------------------
     float tank_l_in = diffused + fb * prev_fb_r;
 
-    // Modulated delay L1: write input, read with modulation
+    // Modulated delay L1: write input, read with modulation around base length
     delay_l1_.Write(tank_l_in);
     float dl1_out = delay_l1_.ReadInterpolated(
-        static_cast<float>(kDelayL1Len) + mod_l);
+        static_cast<float>(delay_l1_len_) + mod_l);
     delay_l1_.Advance();
 
     // Two allpass filters in left tank
     float al1_out = ProcessAllpass(ap_l1_, dl1_out, ap_coeff);
     float al2_out = ProcessAllpass(ap_l2_, al1_out, ap_coeff);
 
-    // One-pole LP in feedback path (frequency-dependent decay)
-    ONE_POLE(lp_state_l_, al2_out, lp_coeff);
+    // Butterworth biquad LP in feedback path (frequency-dependent decay).
+    float lp_out_l = lp_l_.ProcessLP(al2_out);
 
     // DC blocker: subtract slowly-tracked DC estimate to prevent
     // low-frequency buildup at high decay settings.
-    ONE_POLE(dc_estimate_l_, lp_state_l_, dc_block_coeff_);
-    float tank_l_dc_blocked = lp_state_l_ - dc_estimate_l_;
+    ONE_POLE(dc_estimate_l_, lp_out_l, dc_block_coeff_);
+    float tank_l_dc_blocked = lp_out_l - dc_estimate_l_;
 
     // Feedback delay L2
     float dl2_out = delay_l2_.ReadOldest();
@@ -169,19 +255,19 @@ void Reverb::Process(float left_in, float right_in,
     // Modulated delay R1
     delay_r1_.Write(tank_r_in);
     float dr1_out = delay_r1_.ReadInterpolated(
-        static_cast<float>(kDelayR1Len) + mod_r);
+        static_cast<float>(delay_r1_len_) + mod_r);
     delay_r1_.Advance();
 
     // Two allpass filters in right tank
     float ar1_out = ProcessAllpass(ap_r1_, dr1_out, ap_coeff);
     float ar2_out = ProcessAllpass(ap_r2_, ar1_out, ap_coeff);
 
-    // One-pole LP
-    ONE_POLE(lp_state_r_, ar2_out, lp_coeff);
+    // Butterworth biquad LP
+    float lp_out_r = lp_r_.ProcessLP(ar2_out);
 
     // DC blocker
-    ONE_POLE(dc_estimate_r_, lp_state_r_, dc_block_coeff_);
-    float tank_r_dc_blocked = lp_state_r_ - dc_estimate_r_;
+    ONE_POLE(dc_estimate_r_, lp_out_r, dc_block_coeff_);
+    float tank_r_dc_blocked = lp_out_r - dc_estimate_r_;
 
     // Feedback delay R2
     float dr2_out = delay_r2_.ReadOldest();
