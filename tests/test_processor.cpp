@@ -395,6 +395,7 @@ TEST_CASE("BeadsProcessor: Output levels match Eurorack input levels", "[process
         params.feedback = 0.0f;
         params.reverb = 0.0f;
         params.manual_gain_db = 0.0f;     // 0dB = unity
+        params.auto_gain = false;         // Test the DSP chain's unity gain, not AutoGain calibration
         params.trigger_mode = TriggerMode::kLatched;
         tp.processor.SetParameters(params);
 
@@ -438,6 +439,7 @@ TEST_CASE("BeadsProcessor: Output levels match Eurorack input levels", "[process
         params.feedback = 0.0f;
         params.reverb = 0.0f;
         params.manual_gain_db = 0.0f;
+        params.auto_gain = false;         // Test the DSP chain's unity gain, not AutoGain calibration
         tp.processor.SetParameters(params);
 
         std::vector<StereoFrame> input(kBlockSize);

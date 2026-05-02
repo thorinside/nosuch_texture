@@ -40,10 +40,12 @@ private:
 
     static constexpr float kMinGainDb = -60.0f;
     static constexpr float kMaxGainDb = 32.0f;
-    // Headroom reserved for downstream peaks (LP filter ringing, mu-law expansion,
-    // granular reconstruction overlap). Calibration targets -kHeadroomDb instead
-    // of 0 dBFS so the signal leaves room before clipping at the host.
-    static constexpr float kHeadroomDb = 6.0f;
+    // Headroom reserved for downstream peaks (granular reconstruction overlap,
+    // reverb tank gain, LP filter ringing). Calibration targets -kHeadroomDb
+    // instead of 0 dBFS so the signal leaves room before clipping at the host.
+    // Bumped from 6 → 10 dB on 2026-05-01 to fix audible distortion when many
+    // grains stack constructively or reverb adds tank gain.
+    static constexpr float kHeadroomDb = 10.0f;
     // Asymmetric ratchet ceiling in locked mode: if output_peak (envelope * gain)
     // exceeds this threshold we ratchet target_gain_ down (and never raise it back).
     // -1 dBFS leaves ~5 dB of natural fluctuation room above the -6 dBFS calibration

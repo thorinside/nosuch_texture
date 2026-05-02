@@ -49,9 +49,9 @@ TEST_CASE("AutoGain: Loud input stays near unity", "[autogain]") {
     float input_val = std::sin(399999.0f / kSampleRate * 440.0f * 2.0f * 3.14159265f);
     float ratio = std::abs(last_out.l) / std::max(std::abs(input_val), 0.001f);
 
-    // Calibration targets -kHeadroomDb (-6 dBFS), so locked gain ≈ 0.5.
-    // Ratio should be near 0.5, well above silence and below unity.
-    REQUIRE(ratio > 0.4f);
+    // Calibration targets -kHeadroomDb (-10 dBFS), so locked gain ≈ 0.316.
+    // Ratio should be near 0.316, well above silence and below unity.
+    REQUIRE(ratio > 0.25f);
     REQUIRE(ratio < 3.0f);
 }
 
@@ -182,15 +182,15 @@ TEST_CASE("AutoGain: Locked-mode ratchet attenuates on hot input", "[autogain]")
     ag.Init(kSampleRate);
     ag.StartCalibration();
 
-    // Calibrate with a quiet 0.05 signal — gain ramps high (~0.05 → ~10
-    // before -6dB headroom, so locked gain ~10 / 2 = ~5).
+    // Calibrate with a quiet 0.05 signal — gain ramps high (~0.05 → ~20
+    // before -10dB headroom, so locked gain ≈ 20 * 0.316 ≈ 6.3).
     for (int i = 0; i < 300000; ++i) {
         StereoFrame in = {0.05f, 0.05f};
         ag.Process(in, NAN, true);
     }
 
     // Now hit it with a much hotter signal in locked mode — without the
-    // ratchet, output_peak would be ~0.5 * 5 = 2.5 (way over 0 dBFS).
+    // ratchet, output_peak would be ~0.5 * 6.3 ≈ 3.15 (way over 0 dBFS).
     StereoFrame last_out = {0.0f, 0.0f};
     for (int i = 0; i < 48000; ++i) {  // ~1 second to settle
         StereoFrame in = {0.5f, 0.5f};
@@ -209,7 +209,7 @@ TEST_CASE("AutoGain: Locked-mode does NOT raise gain on quiet input", "[autogain
     ag.Init(kSampleRate);
     ag.StartCalibration();
 
-    // Calibrate with 0.5 amplitude signal — locked gain ends up ~unity / 2.
+    // Calibrate with 0.5 amplitude signal — locked gain ends up ~0.5 * 0.316 / 0.5 = 0.632.
     for (int i = 0; i < 300000; ++i) {
         StereoFrame in = {0.5f, 0.5f};
         ag.Process(in, NAN, true);
@@ -261,10 +261,10 @@ TEST_CASE("AutoGain: Low-frequency input doesn't fool peak follower",
         }
     }
 
-    // Calibration target is -6 dBFS = ~0.501.  Allow some slop for the
+    // Calibration target is -10 dBFS ≈ 0.316.  Allow some slop for the
     // gain smoother but the peak must stay well below 1.0 (no clipping).
-    REQUIRE(max_output < 0.85f);
+    REQUIRE(max_output < 0.5f);
     // And not absurdly low — we should still hear the signal.
-    REQUIRE(max_output > 0.3f);
+    REQUIRE(max_output > 0.2f);
 }
 
